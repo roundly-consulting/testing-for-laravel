@@ -6,6 +6,7 @@ namespace RoundlyConsulting\Testing\Expectations;
 
 use Closure;
 use RoundlyConsulting\Testing\Assert;
+use RoundlyConsulting\Testing\Assertions\ConfigContract\ConfigContract;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationAutoload;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationGraph;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationPublish;
@@ -65,6 +66,12 @@ final class Expectations
 
         expect()->extend('toPublishMigrationsTimestamped', function (string $tag, int $count): mixed {
             MigrationPublish::assert((string) $this->value, $tag, $count);
+
+            return $this;
+        });
+
+        expect()->extend('toSatisfyConfigContract', function (string|array $srcDirs, array $options = []): mixed {
+            ConfigContract::assert((string) $this->value, $srcDirs, null, $options);
 
             return $this;
         });

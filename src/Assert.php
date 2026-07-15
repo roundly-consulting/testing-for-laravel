@@ -6,6 +6,7 @@ namespace RoundlyConsulting\Testing;
 
 use Closure;
 use Illuminate\Support\ServiceProvider;
+use RoundlyConsulting\Testing\Assertions\ConfigContract\ConfigContract;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationAutoload;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationGraph;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationPublish;
@@ -84,5 +85,25 @@ final class Assert
     public static function publishesMigrationsTimestamped(string $providerClass, string $tag, int $count): void
     {
         MigrationPublish::assert($providerClass, $tag, $count);
+    }
+
+    /**
+     * Secondary escape hatch for `expect($configPath)->toSatisfyConfigContract(...)`:
+     * pin that every config key the code reads is shipped (forward) and every shipped
+     * leaf key is read (reverse), scraped from source with the tokenizer.
+     *
+     * @param  string|list<string>  $srcDirs
+     * @param  array{
+     *     excludeFromReverse?: list<string>,
+     *     sectionVariables?: array<string, array<string, string>>,
+     *     extraReadPrefixes?: list<string>,
+     *     allowUnread?: list<string>,
+     *     allowUnshipped?: list<string>,
+     *     reverse?: bool,
+     * }  $options
+     */
+    public static function configContract(string $configPath, string|array $srcDirs, ?string $prefix = null, array $options = []): void
+    {
+        ConfigContract::assert($configPath, $srcDirs, $prefix, $options);
     }
 }

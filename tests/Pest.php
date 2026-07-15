@@ -15,3 +15,11 @@ function fixturePath(string $path): string
 {
     return __DIR__.'/Fixtures/'.$path;
 }
+
+/**
+ * Absolute path under tests/Fixtures/config-contract.
+ */
+function configContractFixture(string $path): string
+{
+    return __DIR__.'/Fixtures/config-contract/'.$path;
+}
