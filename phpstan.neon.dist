@@ -9,3 +9,10 @@ parameters:
         # test suite (Expectations proven to register both ways).
         - src/Expectations/Expectations.php
         - src/Pest/Plugin.php
+    ignoreErrors:
+        # Fixture-support trait shipped for consumers' suites; nothing in this package's
+        # own src/ uses it, so PHPStan cannot see a using class (it is exercised by the
+        # test fixtures under tests/, outside the analysed paths).
+        -
+            identifier: trait.unused
+            path: src/Fixtures/Concerns/CountsCreations.php

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace RoundlyConsulting\Testing;
 
 use Closure;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\ServiceProvider;
 use RoundlyConsulting\Testing\Assertions\AboutSecrets;
 use RoundlyConsulting\Testing\Assertions\ConfigContract\ConfigContract;
@@ -12,6 +13,7 @@ use RoundlyConsulting\Testing\Assertions\Migrations\MigrationAutoload;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationGraph;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationPublish;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationRunner;
+use RoundlyConsulting\Testing\Assertions\ModelSwap;
 
 /**
  * Static entry points for every assertion in this package.
@@ -119,5 +121,18 @@ final class Assert
     public static function aboutSectionLeaksNoSecrets(string $section, array $secrets, array $mustRender): void
     {
         AboutSecrets::assert($section, $secrets, $mustRender);
+    }
+
+    /**
+     * Secondary escape hatch for `expect($configKey)->toHonourModelSwap(...)`: drive the
+     * real flow and pin that every model it produces has $subclass as its concrete class
+     * (not merely `instanceof`), failing fast if the swap was not applied before boot.
+     *
+     * @param  class-string  $subclass
+     * @param  Closure(): (Model|iterable<Model>)  $exercise
+     */
+    public static function modelSwapHonoured(string $configKey, string $subclass, Closure $exercise): void
+    {
+        ModelSwap::assert($configKey, $subclass, $exercise);
     }
 }

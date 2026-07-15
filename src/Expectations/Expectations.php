@@ -12,6 +12,7 @@ use RoundlyConsulting\Testing\Assertions\Migrations\MigrationAutoload;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationGraph;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationPublish;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationRunner;
+use RoundlyConsulting\Testing\Assertions\ModelSwap;
 use RoundlyConsulting\Testing\Pest\Plugin;
 
 /**
@@ -79,6 +80,12 @@ final class Expectations
 
         expect()->extend('toLeakNoSecrets', function (array $secrets, array $mustRender): mixed {
             AboutSecrets::assert((string) $this->value, $secrets, $mustRender);
+
+            return $this;
+        });
+
+        expect()->extend('toHonourModelSwap', function (string $subclass, Closure $exercise): mixed {
+            ModelSwap::assert((string) $this->value, $subclass, $exercise);
 
             return $this;
         });

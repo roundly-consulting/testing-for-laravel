@@ -4,10 +4,11 @@ Dev-only test machinery for Laravel packages and applications: a Testbench base 
 case, before-boot model swaps, provider-class migration loading, and Pest expectations
 that are built so they can **always fail** — no vacuous green.
 
-> Status: early build (Phase C). Today it ships the base test cases, the structural
+> Status: early build (Phase D). Today it ships the base test cases, the structural
 > migration-order pin, a real-engine migration runner with a negative control, the
-> publish-only migration guards, the both-directions config-key contract, and the
-> secret-safe `about` capture. Model-swap and arch-preset assertions land in later phases.
+> publish-only migration guards, the both-directions config-key contract, the
+> secret-safe `about` capture, the model-swap proof, the lock recorders, and the
+> database-driver matrix. Arch-preset assertions land in the last phase.
 
 ## Requirements
 
@@ -193,6 +194,86 @@ final class TestCase extends PackageTestCase
 
 Swap a configured model before boot with `$this->swapModel('media.media_model', CustomMedia::class)`
 in `defineEnvironment()`.
+
+## The model-swap proof
+
+`expect($configKey)->toHonourModelSwap()` proves a package honours a configured model swap by
+**driving the real flow** and checking the concrete class of every model it produces — not just
+`instanceof`.
+
+```php
+// config('media.media_model') swapped to CustomMedia::class in configBeforeBoot()
+expect('media.media_model')->toHonourModelSwap(CustomMedia::class, function () use ($user, $path) {
+    $media = $user->addMediaFromPath($path, 'avatar'); // the real flow, not a resolver string check
+    return [$media, $user->firstMedia('avatar')];
+});
+```
+
+It fails fast if `config($configKey) !== $subclass` (you forgot the before-boot swap), then
+asserts every returned model's **concrete class** is `$subclass` — `instanceof` is not enough,
+because a helper resolving `static::query()` to the packaged class creates the row as the wrong
+class, so the host's model events never fire. When the subclass uses the shipped
+`RoundlyConsulting\Testing\Fixtures\Concerns\CountsCreations` trait, it also asserts at least one
+`created` event landed on it — the only proof the row was really created *as* the host class.
+Mirrors on `Assert::modelSwapHonoured()`.
+
+## Lock recorders
+
+SQLite compiles `lockForUpdate()` to an **empty string**, so a lock leaves no trace and a test
+cannot tell a locked read from an unlocked one. Two observable variants ship, both recording the
+lock and the **transaction depth** it happened at into `RoundlyConsulting\Testing\Fixtures\LockRecorder`.
+
+**Variant A** — the model is subclassable: add the `RecordsLocks` trait and its builder records
+each lock directly.
+
+```php
+use RoundlyConsulting\Testing\Fixtures\Concerns\RecordsLocks;
+use RoundlyConsulting\Testing\Fixtures\LockRecorder;
+
+final class RecordingCoupon extends Coupon { use RecordsLocks; }
+
+LockRecorder::flush();
+DB::transaction(fn () => RecordingCoupon::query()->lockForUpdate()->get());
+
+expect(LockRecorder::recorded())->toHaveCount(1)
+    ->and(LockRecorder::recorded()[0]['transactionDepth'])->toBe(1); // depth is the load-bearing datum
+```
+
+**Variant B** — the model is not subclassable / the lock is buried in an action: install
+`LockRecordingGrammar`, which compiles the lock to a trailing `/* lock-for-update */` SQL comment
+that runs unchanged and is observed via `DB::listen()`.
+
+```php
+use RoundlyConsulting\Testing\Fixtures\LockRecordingGrammar;
+
+$connection = DB::connection();
+$connection->setQueryGrammar(new LockRecordingGrammar($connection));
+
+LockRecorder::flush();
+LockRecorder::listenForMarkers();
+DB::transaction(fn () => Shop::query()->lockForUpdate()->get());
+
+expect(LockRecorder::recorded()[0]['sql'])->toContain('/* lock-for-update */');
+```
+
+## The database-driver matrix
+
+`DriverMatrix` runs a suite across drivers so a SQLite-only suite doesn't miss what the engines
+disagree on (a `LIKE` without `ESCAPE` is green on postgres, zero rows on SQLite).
+
+```php
+use RoundlyConsulting\Testing\Database\DriverMatrix;
+
+// in a TestCase::defineEnvironment()
+DriverMatrix::configure($app);
+
+// skip a driver-specific case visibly on the wrong leg
+it('uses a jsonb column')->skip(fn () => DriverMatrix::driver() !== 'pgsql');
+```
+
+`configure()` points the `testing` connection at `TESTING_DB_DRIVER` (default: in-memory SQLite
+with foreign keys on). The pgsql / mysql legs read `TESTING_DB_{HOST,PORT,DATABASE,USERNAME,PASSWORD}`
+— the same variables the postgres CI job already exports.
 
 ## Testing
 
