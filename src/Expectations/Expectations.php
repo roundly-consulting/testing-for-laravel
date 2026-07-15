@@ -4,8 +4,12 @@ declare(strict_types=1);
 
 namespace RoundlyConsulting\Testing\Expectations;
 
+use Closure;
 use RoundlyConsulting\Testing\Assert;
+use RoundlyConsulting\Testing\Assertions\Migrations\MigrationAutoload;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationGraph;
+use RoundlyConsulting\Testing\Assertions\Migrations\MigrationPublish;
+use RoundlyConsulting\Testing\Assertions\Migrations\MigrationRunner;
 use RoundlyConsulting\Testing\Pest\Plugin;
 
 /**
@@ -37,6 +41,30 @@ final class Expectations
         expect()->extend('toHaveRunnableMigrationOrder', function (?int $foreignKeys = null, array $tableResolvers = []): mixed {
             MigrationGraph::forDirectory((string) $this->value, $tableResolvers)
                 ->assertRunnable($foreignKeys);
+
+            return $this;
+        });
+
+        expect()->extend('toApplyOnConnection', function (string $connection): mixed {
+            MigrationRunner::applyOnConnection((string) $this->value, $connection);
+
+            return $this;
+        });
+
+        expect()->extend('toRejectBrokenOrderOnConnection', function (Closure $reorder, string $connection): mixed {
+            MigrationRunner::brokenOrderIsRejectedOnConnection((string) $this->value, $reorder, $connection);
+
+            return $this;
+        });
+
+        expect()->extend('toNotAutoLoadMigrations', function (?string $migrationsDir = null): mixed {
+            MigrationAutoload::assert((string) $this->value, $migrationsDir);
+
+            return $this;
+        });
+
+        expect()->extend('toPublishMigrationsTimestamped', function (string $tag, int $count): mixed {
+            MigrationPublish::assert((string) $this->value, $tag, $count);
 
             return $this;
         });

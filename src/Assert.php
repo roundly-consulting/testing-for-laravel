@@ -4,7 +4,12 @@ declare(strict_types=1);
 
 namespace RoundlyConsulting\Testing;
 
+use Closure;
+use Illuminate\Support\ServiceProvider;
+use RoundlyConsulting\Testing\Assertions\Migrations\MigrationAutoload;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationGraph;
+use RoundlyConsulting\Testing\Assertions\Migrations\MigrationPublish;
+use RoundlyConsulting\Testing\Assertions\Migrations\MigrationRunner;
 
 /**
  * Static entry points for every assertion in this package.
@@ -32,5 +37,52 @@ final class Assert
     ): void {
         MigrationGraph::forDirectory($migrationsDir, $tableResolvers)
             ->assertRunnable($expectedForeignKeys);
+    }
+
+    /**
+     * Real-engine companion to {@see self::migrationsRunInDependencyOrder()}: run the
+     * migrations against a live connection and pin that every one applies (on pgsql/mysql
+     * that includes every foreign key landing on an existing parent).
+     */
+    public static function migrationsApplyOnConnection(string $migrationsDir, string $connection): void
+    {
+        MigrationRunner::applyOnConnection($migrationsDir, $connection);
+    }
+
+    /**
+     * The negative control: pass only if the live engine **rejects** a deliberately
+     * broken order. Fails loudly if the engine accepts it (a driver that does not enforce
+     * foreign keys makes the check vacuous).
+     *
+     * @param  Closure(list<string>): iterable<string>  $reorder
+     */
+    public static function brokenOrderIsRejectedOnConnection(
+        string $migrationsDir,
+        Closure $reorder,
+        string $connection,
+    ): void {
+        MigrationRunner::brokenOrderIsRejectedOnConnection($migrationsDir, $reorder, $connection);
+    }
+
+    /**
+     * Pin the publish-only policy: the package's migrations directory (resolved from the
+     * provider by reflection, or given explicitly) must not be registered with the migrator.
+     *
+     * @param  class-string<ServiceProvider>|string  $providerClass
+     */
+    public static function doesNotAutoLoadMigrations(string $providerClass, ?string $migrationsDir = null): void
+    {
+        MigrationAutoload::assert($providerClass, $migrationsDir);
+    }
+
+    /**
+     * Pin that a provider publishes exactly $count migrations under $tag, each to a
+     * timestamped `database_path('migrations/<Y_m_d_His>_<name>.php')` destination.
+     *
+     * @param  class-string<ServiceProvider>|string  $providerClass
+     */
+    public static function publishesMigrationsTimestamped(string $providerClass, string $tag, int $count): void
+    {
+        MigrationPublish::assert($providerClass, $tag, $count);
     }
 }
