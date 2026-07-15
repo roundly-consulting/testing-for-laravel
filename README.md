@@ -4,10 +4,10 @@ Dev-only test machinery for Laravel packages and applications: a Testbench base 
 case, before-boot model swaps, provider-class migration loading, and Pest expectations
 that are built so they can **always fail** — no vacuous green.
 
-> Status: early build (Phase B). Today it ships the base test cases, the structural
-> migration-order pin, a real-engine migration runner with a negative control, and the
-> publish-only migration guards. Config-contract, about-secret, model-swap and arch-preset
-> assertions land in later phases.
+> Status: early build (Phase C). Today it ships the base test cases, the structural
+> migration-order pin, a real-engine migration runner with a negative control, the
+> publish-only migration guards, the both-directions config-key contract, and the
+> secret-safe `about` capture. Model-swap and arch-preset assertions land in later phases.
 
 ## Requirements
 
@@ -110,6 +110,57 @@ expect(PasskeysServiceProvider::class)->toPublishMigrationsTimestamped('passkeys
 The migrations directory defaults to the provider's own (resolved by reflection); pass an
 explicit path to override. Both mirror on `Assert::doesNotAutoLoadMigrations()` and
 `Assert::publishesMigrationsTimestamped()`.
+
+## The config-key contract
+
+`expect(...)->toSatisfyConfigContract()` pins, in both directions, that a package ships
+exactly the config keys it reads. It scrapes reads out of your **source tokens** — never a
+regex, so a key mentioned only in a docblock does not count as a read.
+
+```php
+it('ships what it reads and reads what it ships', function (): void {
+    expect(__DIR__.'/../../config/passkeys.php')->toSatisfyConfigContract(__DIR__.'/../../src', [
+        // The about provider only *renders* these keys — a render is not a read:
+        'excludeFromReverse' => ['PasskeysServiceProvider.php'],
+        // A DTO reads keys by array offset off the whole `passkeys.rp` subtree:
+        'sectionVariables' => ['PasskeyConfig.php' => ['$rp' => 'passkeys.rp']],
+    ]);
+});
+```
+
+- **Forward** — every `config('passkeys.…')` key the code reads must be shipped in the
+  file. Catches a feature that reads `payments.*` while the file ships `payment.*`.
+- **Reverse** — every shipped leaf key must be read somewhere. Catches a shipped,
+  documented key that nothing uses. Reading a parent wholesale does not count as reading a
+  specific leaf, so a dead sub-key is still caught.
+- A `config("passkeys.{$x}")` interpolation or concatenation under the prefix is **flagged**,
+  never silently ignored — make the key literal or allow-list it.
+- Options: `extraReadPrefixes` (count `ModelResolver::for('passkeys.…')`-style literals as
+  reads), `allowUnread` / `allowUnshipped` (explicit escape hatches — a stale entry that
+  silences nothing is itself a failure, so the list can't rot), and `reverse => false`
+  (forward-only, for a whole app whose config carries keys read by vendor packages).
+
+The prefix defaults to the config file's basename. A sibling `database/` directory is
+scanned for reads too. Mirrors on `Assert::configContract()`.
+
+## The secret-safe `about` capture
+
+`expect($section)->toLeakNoSecrets()` captures one `artisan about` section and pins that it
+renders what it must while leaking none of the secrets it must not.
+
+```php
+expect('passkeys')->toLeakNoSecrets(
+    secrets: ['auth.acme-internal.example', '/srv/acme/secrets', 'ea9b8d66'],
+    mustRender: ['Sign-count policy', 'AAGUID allow-list'],
+);
+```
+
+The capture goes through `Artisan::call('about', ...)` + `Artisan::output()` — the version
+that actually returns the output. The order is the point: it asserts the output is non-empty,
+then that every `$mustRender` string is present (positive proof the capture worked), and only
+then that no secret renders. `$mustRender` is required and non-empty — an empty list throws at
+call time, because a negative-only check can pass against empty output. Mirrors on
+`Assert::aboutSectionLeaksNoSecrets()`.
 
 ## The package base test case
 

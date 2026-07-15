@@ -6,6 +6,7 @@ namespace RoundlyConsulting\Testing\Expectations;
 
 use Closure;
 use RoundlyConsulting\Testing\Assert;
+use RoundlyConsulting\Testing\Assertions\AboutSecrets;
 use RoundlyConsulting\Testing\Assertions\ConfigContract\ConfigContract;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationAutoload;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationGraph;
@@ -72,6 +73,12 @@ final class Expectations
 
         expect()->extend('toSatisfyConfigContract', function (string|array $srcDirs, array $options = []): mixed {
             ConfigContract::assert((string) $this->value, $srcDirs, null, $options);
+
+            return $this;
+        });
+
+        expect()->extend('toLeakNoSecrets', function (array $secrets, array $mustRender): mixed {
+            AboutSecrets::assert((string) $this->value, $secrets, $mustRender);
 
             return $this;
         });

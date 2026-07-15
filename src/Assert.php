@@ -6,6 +6,7 @@ namespace RoundlyConsulting\Testing;
 
 use Closure;
 use Illuminate\Support\ServiceProvider;
+use RoundlyConsulting\Testing\Assertions\AboutSecrets;
 use RoundlyConsulting\Testing\Assertions\ConfigContract\ConfigContract;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationAutoload;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationGraph;
@@ -105,5 +106,18 @@ final class Assert
     public static function configContract(string $configPath, string|array $srcDirs, ?string $prefix = null, array $options = []): void
     {
         ConfigContract::assert($configPath, $srcDirs, $prefix, $options);
+    }
+
+    /**
+     * Secondary escape hatch for `expect($section)->toLeakNoSecrets(...)`: capture one
+     * `artisan about` section and pin it renders every $mustRender string and leaks no
+     * $secrets. $mustRender must be non-empty (a construction error otherwise).
+     *
+     * @param  list<string>  $secrets
+     * @param  list<string>  $mustRender
+     */
+    public static function aboutSectionLeaksNoSecrets(string $section, array $secrets, array $mustRender): void
+    {
+        AboutSecrets::assert($section, $secrets, $mustRender);
     }
 }
