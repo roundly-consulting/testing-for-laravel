@@ -1,20 +1,33 @@
 # Testing for Laravel
 
-Dev-only test machinery for Laravel packages and applications: a Testbench base test
-case, before-boot model swaps, provider-class migration loading, and Pest expectations
-that are built so they can **always fail** — no vacuous green.
+**The test suite that can't lie to you.** Dev-only test machinery for Laravel packages
+and applications — base test cases, a structural migration-order pin, a both-directions
+config contract, a secret-safe `about` capture, a model-swap proof, lock recorders, a
+driver matrix, and seven architecture presets. Every assertion is built so it **can
+always fail**: no vacuous green, no assertion that passes because it never really ran.
 
-> Status: early build (Phase D). Today it ships the base test cases, the structural
-> migration-order pin, a real-engine migration runner with a negative control, the
-> publish-only migration guards, the both-directions config-key contract, the
-> secret-safe `about` capture, the model-swap proof, the lock recorders, and the
-> database-driver matrix. Arch-preset assertions land in the last phase.
+Each helper here exists because a real bug shipped past a test that *couldn't* fail —
+a secret-leak check reading empty output, a config regex satisfied by a docblock, a
+migration order green on SQLite but uninstallable on Postgres. So every assertion in this
+package requires its positive proof, guards its own parse, and ships a "proves-it-bites"
+self-test that goes red on a broken fixture.
 
 ## Requirements
 
 - PHP 8.4+
 - Laravel 12 or 13
 - Pest 4 (the assertions ship as Pest expectations)
+
+## Two audiences, by design
+
+1. **Roundly `*-for-laravel` packages** — the Testbench-based `PackageTestCase` plus every
+   expectation. This is the primary consumer; it replaces the near-identical
+   `tests/TestCase.php` copied into every package.
+2. **Whole Laravel apps** — a normal app's own suite can run the same assertions against
+   its own migrations, config, and models, with **no roundly package and no Testbench
+   installed**. The static `Assert`, the Pest expectations, and the arch presets never
+   reference Testbench (enforced by this package's own arch test). See
+   [For applications](#for-applications).
 
 ## Installation
 
@@ -23,131 +36,132 @@ composer require --dev roundly-consulting/testing-for-laravel
 ```
 
 The Pest expectations register automatically through `extra.pest.plugins`. Suites that
-disable plugin discovery can register them explicitly in `tests/Pest.php`:
+disable plugin discovery register them explicitly in `tests/Pest.php`:
 
 ```php
+<?php
+
+declare(strict_types=1);
+
 use RoundlyConsulting\Testing\Expectations\Expectations;
 
-Expectations::register(); // idempotent
+uses(RoundlyConsulting\Passkeys\Tests\TestCase::class)->in('Feature', 'Unit');
+
+Expectations::register(); // idempotent — a no-op if the Pest plugin already ran
 ```
+
+Both paths coexist: the plugin registers on boot, `Expectations::register()` guards on an
+internal flag, so calling both is safe.
 
 ## The migration-order pin
 
-`expect(...)->toHaveRunnableMigrationOrder()` is the canonical, documented API. It parses
-the foreign keys out of your migration **source** and asserts every referenced table is
-created before the migration that references it — a *structural* check, because SQLite
-happily creates a table that points at a missing parent and only complains at insert time.
+```php
+expect($migrationsDir)->toHaveRunnableMigrationOrder(?int $foreignKeys = null, array $tableResolvers = []);
+```
+
+Parses the foreign keys out of your migration **source** and asserts every referenced
+table is created before the migration that references it — a *structural* check.
 
 ```php
 it('has a runnable migration order', function (): void {
-    expect(database_path('migrations'))->toHaveRunnableMigrationOrder();
+    expect(database_path('migrations'))->toHaveRunnableMigrationOrder(foreignKeys: 19);
 });
-
-// Pin the edge count so the check can never pass over an empty parse:
-expect(__DIR__.'/../../database/migrations')->toHaveRunnableMigrationOrder(foreignKeys: 19);
-
-// Resolve non-literal table names (Schema::create($var), ->constrained(Class::method())):
-expect($dir)->toHaveRunnableMigrationOrder(tableResolvers: ['$tableName' => 'media']);
 ```
 
-It understands every foreign-key form the fleet uses: `->constrained('table')`, bare
-`->constrained()` (parent derived from the column), long-hand `->references('id')->on('table')`,
-and `->constrained(Class::method())` via `tableResolvers`. It also pins that a
-`Schema::table()` ALTER sorts after its CREATE and that a self-referencing key sorts with
-its own migration. An unparseable declaration **fails** rather than being silently dropped.
+**Bug it prevents:** five packages (approvals #2, messages #7, shops #17, teams #20,
+reviews #36) shipped uninstallable migration orders under **green SQLite suites**, because
+SQLite happily creates a table that points at a missing parent and only complains at
+insert time. Teams #20 proved it three times over: of the three order checks, only the
+structural one goes red on SQLite. It understands every FK form the fleet uses —
+`->constrained('table')`, bare `->constrained()` (parent derived from the column, teams
+#20), long-hand `->references('id')->on('table')` (alerts #34), and
+`->constrained(Class::method())` via `tableResolvers` (permissions) — pins that a
+`Schema::table()` ALTER sorts after its CREATE (approvals #2) and that a self-referencing
+key sorts with its own migration (advertisements #33, reviews #36). An unparseable
+declaration **fails** rather than being silently dropped, and `foreignKeys:` pins the edge
+count so the check can never pass over an empty parse.
 
-Plain PHPUnit callers can use the static escape hatch:
+### Real-engine runner and its negative control
 
 ```php
-use RoundlyConsulting\Testing\Assert;
-
-Assert::migrationsRunInDependencyOrder(database_path('migrations'), expectedForeignKeys: 19);
+expect($migrationsDir)->toApplyOnConnection(string $connection);
+expect($migrationsDir)->toRejectBrokenOrderOnConnection(Closure $reorder, string $connection);
 ```
 
-## The real-engine runner and its negative control
-
-The structural pin is engine-independent, but the definitive proof is running the migrations
-against a real database. `expect(...)->toApplyOnConnection()` applies every migration, in
-directory order, against a live connection from an empty database — on pgsql/mysql that means
-every foreign key must land on a table that already exists.
+The structural pin is engine-independent; the definitive proof runs the migrations against
+a live database.
 
 ```php
-it('applies clean on postgres', function (): void {
-    expect(database_path('migrations'))->toApplyOnConnection('pgsql');
-})->skip(fn (): bool => ! test()->connectionAvailable('pgsql'), 'no pgsql');
-```
+expect(database_path('migrations'))->toApplyOnConnection('pgsql');
 
-A green foreign-key test proves nothing until you have watched the engine *reject* the broken
-order. `toRejectBrokenOrderOnConnection()` is that negative control: `$reorder` deliberately
-breaks the order, and the expectation passes only if the engine refuses to apply it. If the
-engine **accepts** the broken order — because it does not enforce foreign keys (SQLite) — the
-check is vacuous and fails loudly, so you can never mistake "sqlite doesn't care" for a pass.
-
-```php
 expect(database_path('migrations'))->toRejectBrokenOrderOnConnection(
     fn (array $files): array => array_reverse($files),
     'pgsql',
 );
 ```
 
-Gate these on a driver being present so a suite with no pgsql/mysql *skips visibly* rather than
-passing green — `MigrationRunner::connectionIsAvailable('pgsql')` (mirrored on the base test case
-as `connectionAvailable()`) is a boolean you can hand to Pest's `->skip()`.
+**Bug it prevents:** a green FK test proves nothing until you have watched the engine
+*reject* the broken order (forms #28). `toRejectBrokenOrderOnConnection` is that negative
+control — it passes only if the engine refuses the reordered set, and **fails loudly** if
+the engine accepts it (a driver that does not enforce foreign keys, like SQLite, makes the
+check vacuous). Gate both on `MigrationRunner::connectionIsAvailable('pgsql')` (mirrored on
+the base case as `connectionAvailable()`) so a suite with no Postgres *skips visibly*.
 
-## Publish-only migration guards
-
-The fleet publishes migrations timestamped rather than auto-loading them (auto-load + publish
-runs both copies — a duplicate-table failure). Two expectations pin the policy on a service
-provider:
+## Publish-only migration guards *(package-only)*
 
 ```php
-// The package's database/migrations must NOT be registered with the migrator:
-expect(PasskeysServiceProvider::class)->toNotAutoLoadMigrations();
+expect($providerClass)->toNotAutoLoadMigrations(?string $migrationsDir = null);
+expect($providerClass)->toPublishMigrationsTimestamped(string $tag, int $count);
+```
 
-// Every source publishes to a timestamped database_path('migrations/<Y_m_d_His>_<name>.php'):
+```php
+expect(PasskeysServiceProvider::class)->toNotAutoLoadMigrations();
 expect(PasskeysServiceProvider::class)->toPublishMigrationsTimestamped('passkeys-migrations', 3);
 ```
 
-The migrations directory defaults to the provider's own (resolved by reflection); pass an
-explicit path to override. Both mirror on `Assert::doesNotAutoLoadMigrations()` and
-`Assert::publishesMigrationsTimestamped()`.
+**Bug it prevents:** the fleet publishes migrations timestamped rather than auto-loading
+them; doing both runs both copies — a duplicate-table failure (bug #5, on three packages).
+These two expectations only make sense against a package service provider, so they are
+**package-only** — an app has no provider to point them at.
 
 ## The config-key contract
 
-`expect(...)->toSatisfyConfigContract()` pins, in both directions, that a package ships
-exactly the config keys it reads. It scrapes reads out of your **source tokens** — never a
-regex, so a key mentioned only in a docblock does not count as a read.
-
 ```php
-it('ships what it reads and reads what it ships', function (): void {
-    expect(__DIR__.'/../../config/passkeys.php')->toSatisfyConfigContract(__DIR__.'/../../src', [
-        // The about provider only *renders* these keys — a render is not a read:
-        'excludeFromReverse' => ['PasskeysServiceProvider.php'],
-        // A DTO reads keys by array offset off the whole `passkeys.rp` subtree:
-        'sectionVariables' => ['PasskeyConfig.php' => ['$rp' => 'passkeys.rp']],
-    ]);
-});
+expect($configPath)->toSatisfyConfigContract(string|array $srcDirs, array $options = []);
 ```
 
-- **Forward** — every `config('passkeys.…')` key the code reads must be shipped in the
-  file. Catches a feature that reads `payments.*` while the file ships `payment.*`.
-- **Reverse** — every shipped leaf key must be read somewhere. Catches a shipped,
-  documented key that nothing uses. Reading a parent wholesale does not count as reading a
-  specific leaf, so a dead sub-key is still caught.
-- A `config("passkeys.{$x}")` interpolation or concatenation under the prefix is **flagged**,
-  never silently ignored — make the key literal or allow-list it.
-- Options: `extraReadPrefixes` (count `ModelResolver::for('passkeys.…')`-style literals as
-  reads), `allowUnread` / `allowUnshipped` (explicit escape hatches — a stale entry that
-  silences nothing is itself a failure, so the list can't rot), and `reverse => false`
-  (forward-only, for a whole app whose config carries keys read by vendor packages).
+Pins, in both directions, that a package ships exactly the config keys it reads. Reads are
+scraped from **source tokens**, never a regex.
 
-The prefix defaults to the config file's basename. A sibling `database/` directory is
-scanned for reads too. Mirrors on `Assert::configContract()`.
+```php
+expect(config_path('passkeys.php'))->toSatisfyConfigContract(__DIR__.'/../../src', [
+    'excludeFromReverse' => ['PasskeysServiceProvider.php'], // renders keys; a render is not a read
+    'sectionVariables'   => ['PasskeyConfig.php' => ['$rp' => 'passkeys.rp']], // DTO array-offset reads
+]);
+```
+
+**Bugs it prevents:**
+- **Forward** (every key the code reads is shipped) — shops #18: the whole store-credit
+  feature read `shops.payments.*` while the file shipped `payment.*`, so
+  `SHOPS_ALLOW_STORE_CREDIT` did nothing and 330 tests stayed green because the suite set
+  the same wrong key.
+- **Reverse** (every shipped leaf is read) — alerts #24 (a thrice-documented `escalation`
+  key nothing read), media #27 (a `max_file_size` cap that never applied — an upload
+  endpoint with *no size limit*), query-builder #32, permissions' dead `load_migrations`.
+- **Tokenizer, not regex** — media #27's near-miss: a regex over raw text was satisfied by
+  a *docblock mention* and stayed green with the fix reverted. A docblock is a comment
+  token here, never a read.
+
+A `config("passkeys.{$x}")` interpolation under the prefix is **flagged**, never silently
+ignored. `extraReadPrefixes` counts `ModelResolver::for('passkeys.…')`-style literals;
+`allowUnread`/`allowUnshipped` are rot-proof (a stale entry that silences nothing is itself
+a failure); `reverse => false` is the forward-only mode for apps.
 
 ## The secret-safe `about` capture
 
-`expect($section)->toLeakNoSecrets()` captures one `artisan about` section and pins that it
-renders what it must while leaking none of the secrets it must not.
+```php
+expect($section)->toLeakNoSecrets(array $secrets, array $mustRender);
+```
 
 ```php
 expect('passkeys')->toLeakNoSecrets(
@@ -156,19 +170,107 @@ expect('passkeys')->toLeakNoSecrets(
 );
 ```
 
-The capture goes through `Artisan::call('about', ...)` + `Artisan::output()` — the version
-that actually returns the output. The order is the point: it asserts the output is non-empty,
-then that every `$mustRender` string is present (positive proof the capture worked), and only
-then that no secret renders. `$mustRender` is required and non-empty — an empty list throws at
-call time, because a negative-only check can pass against empty output. Mirrors on
-`Assert::aboutSectionLeaksNoSecrets()`.
+**Bug it prevents:** purchases #13 — the fleet's most credential-heavy `about` section was
+guarded by a negative assertion against `app(Kernel::class)->output()`, which returns `''`.
+Every "does not leak" check was vacuous; the leak was caught only because one positive
+assertion happened to exist. This capture goes through `Artisan::call('about', …)` +
+`Artisan::output()` and runs in order: (1) output non-empty, (2) every `$mustRender` string
+present, (3) only then no secret renders. `$mustRender` is required and non-empty — an
+empty list throws at call time, because a negative-only check can pass against empty output.
 
-## The package base test case
+## The model-swap proof
 
-`PackageTestCase` replaces the near-identical `tests/TestCase.php` copied into every
-roundly package. It runs against an in-memory SQLite database with foreign-key
-constraints on, loads migrations **by provider class** (never by filename), and applies
-config and model swaps before the providers boot.
+```php
+expect($configKey)->toHonourModelSwap(string $subclass, Closure $exercise);
+```
+
+```php
+// config('media.media_model') swapped to CustomMedia::class before boot
+expect('media.media_model')->toHonourModelSwap(CustomMedia::class, function () use ($user, $path) {
+    $media = $user->addMediaFromPath($path, 'avatar'); // the real flow, not a resolver string check
+    return [$media, $user->firstMedia('avatar')];
+});
+```
+
+**Bug it prevents:** the retrofit's single biggest class (12+ entries) — implicit `hasMany`
+FKs derived from the parent class name, bare `belongsToMany()` deriving the pivot,
+`static::query()` in a `findOrCreate` helper (permissions #31/#34), hard-coded call sites
+beside an honoured config (shops #3, media #28), and `final` on the invited subclass (7×).
+It fails fast if `config($configKey) !== $subclass` (you forgot the before-boot swap), then
+asserts every returned model's **concrete class** is `$subclass` — `instanceof` is not
+enough, because a row created as the packaged class never fires the host's model events.
+When the subclass uses the shipped `CountsCreations` trait it also asserts a `created`
+event landed on it — the only proof the row was really created *as* the host class (#31).
+
+## Architecture presets
+
+Seven composable presets, each grounded in a bug the fleet shipped. Call one at the top of
+a Pest arch file; it registers its own case.
+
+```php
+use RoundlyConsulting\Testing\Arch\ArchPresets;
+
+ArchPresets::strictTypes(string $namespace);                       // declare(strict_types=1) everywhere
+ArchPresets::finalByDefault(string $namespace);                    // ->ignoring(...) to exempt
+ArchPresets::swappableModelsAreNotFinal(array $map);               // [Shop::class => 'shops.shop_model']
+ArchPresets::noLocalCryptoPrimitives(string $namespace);           // ->ignoring(...) to exempt
+ArchPresets::modelsResolveThroughSeam(string $srcDir, string $seamDir = 'Support');
+ArchPresets::runtimeRequireIsWhitelisted(string $composerJson, array $alsoAllow = []);
+ArchPresets::noDebuggingLeftovers();                               // dd/dump/ray/var_dump/print_r
+```
+
+The four built on Pest's arch layer (`strictTypes`, `finalByDefault`,
+`noLocalCryptoPrimitives`, `noDebuggingLeftovers`) return the underlying arch expectation,
+so `->ignoring(...)` composes exactly as on a hand-written `arch()`:
+
+```php
+ArchPresets::finalByDefault('RoundlyConsulting\Shops\Actions')->ignoring(SomeBase::class);
+ArchPresets::noLocalCryptoPrimitives('RoundlyConsulting\Passkeys')->ignoring('RoundlyConsulting\Passkeys\Attestation');
+```
+
+The three Pest's arch layer can't express (`swappableModelsAreNotFinal`,
+`modelsResolveThroughSeam`, `runtimeRequireIsWhitelisted`) register a token/reflection
+`it()` case instead.
+
+**Bugs each prevents:**
+
+| Preset | Bug it prevents |
+|---|---|
+| `strictTypes` | files drifting off `declare(strict_types=1)`, so a silent type coercion slips in |
+| `finalByDefault` | accidental extension points; classes meant to be closed left open |
+| `swappableModelsAreNotFinal` | `final` on a config-swappable model — a PHP fatal the moment a host swaps it, shipped **7×** (shops #19, teams #21, advertisements #23, alerts #25, reports #33, posts #35, passkeys #37) |
+| `noLocalCryptoPrimitives` | crypto primitives (`hash`, `openssl_*`, `sodium_*`, `random_bytes`, `base64_*`) re-implemented locally instead of in `crypto-for-laravel` (passkeys ban list) |
+| `modelsResolveThroughSeam` | `static::query()`/`self::query()`/`new static` resolving the *called* class, not the *configured* one — it broke authorization (permissions #34); also a swap literal read outside the seam |
+| `runtimeRequireIsWhitelisted` | a third-party vendor slipping into `require` and shipping transitively into every consumer (the dependency policy as a test) |
+| `noDebuggingLeftovers` | a stray `dd`/`dump`/`ray` shipped to production |
+
+### The deliberate tension: `finalByDefault` vs `swappableModelsAreNotFinal`
+
+These two presets pull in opposite directions **on purpose**. `finalByDefault` wants every
+class final; `swappableModelsAreNotFinal` forbids `final` on a config-swappable model. The
+fleet shipped `final` on a swappable model seven times under a green "everything is final"
+arch test — a documented seam that was a PHP fatal error. Run **both**: exempt the swappable
+models from the first, pin them with the second.
+
+```php
+ArchPresets::finalByDefault('RoundlyConsulting\Shops')->ignoring(Shop::class);
+ArchPresets::swappableModelsAreNotFinal([Shop::class => 'shops.shop_model']);
+```
+
+`swappableModelsAreNotFinal` asserts each mapped model is non-final **and** that the config
+key defaults to that very model. The same check is available per-model as an expectation:
+
+```php
+expect(Shop::class)->toBeSwappableVia('shops.shop_model');
+```
+
+## The package base test case *(package-only)*
+
+`PackageTestCase` replaces the near-identical `tests/TestCase.php` copied into every roundly
+package. It runs against in-memory SQLite with foreign-key constraints **on**, loads
+migrations **by provider class** (never by filename — the `LoadsProviderMigrations` concern
+resolves each provider to its `database/migrations` by reflection), and applies config and
+model swaps before the providers boot.
 
 ```php
 use RoundlyConsulting\Testing\PackageTestCase;
@@ -192,88 +294,82 @@ final class TestCase extends PackageTestCase
 }
 ```
 
-Swap a configured model before boot with `$this->swapModel('media.media_model', CustomMedia::class)`
-in `defineEnvironment()`.
+Swap a configured model before boot with
+`$this->swapModel('media.media_model', CustomMedia::class)` in `defineEnvironment()` — the
+only correct place, since providers hang observers on the *configured* class at boot.
 
-## The model-swap proof
+`PackageTestCase`, `LoadsProviderMigrations`, `toNotAutoLoadMigrations`, and
+`toPublishMigrationsTimestamped` are **package-only**: they assume a package service provider
+and Testbench. Everything else works Testbench-free in any app.
 
-`expect($configKey)->toHonourModelSwap()` proves a package honours a configured model swap by
-**driving the real flow** and checking the concrete class of every model it produces — not just
-`instanceof`.
+## Lock recorders and the driver matrix
 
-```php
-// config('media.media_model') swapped to CustomMedia::class in configBeforeBoot()
-expect('media.media_model')->toHonourModelSwap(CustomMedia::class, function () use ($user, $path) {
-    $media = $user->addMediaFromPath($path, 'avatar'); // the real flow, not a resolver string check
-    return [$media, $user->firstMedia('avatar')];
-});
-```
-
-It fails fast if `config($configKey) !== $subclass` (you forgot the before-boot swap), then
-asserts every returned model's **concrete class** is `$subclass` — `instanceof` is not enough,
-because a helper resolving `static::query()` to the packaged class creates the row as the wrong
-class, so the host's model events never fire. When the subclass uses the shipped
-`RoundlyConsulting\Testing\Fixtures\Concerns\CountsCreations` trait, it also asserts at least one
-`created` event landed on it — the only proof the row was really created *as* the host class.
-Mirrors on `Assert::modelSwapHonoured()`.
-
-## Lock recorders
-
-SQLite compiles `lockForUpdate()` to an **empty string**, so a lock leaves no trace and a test
-cannot tell a locked read from an unlocked one. Two observable variants ship, both recording the
-lock and the **transaction depth** it happened at into `RoundlyConsulting\Testing\Fixtures\LockRecorder`.
-
-**Variant A** — the model is subclassable: add the `RecordsLocks` trait and its builder records
-each lock directly.
+SQLite compiles `lockForUpdate()` to an **empty string**, so a test cannot tell a locked
+read from an unlocked one. Two observable variants ship, both recording the lock and the
+**transaction depth** it ran at into `RoundlyConsulting\Testing\Fixtures\LockRecorder`:
 
 ```php
 use RoundlyConsulting\Testing\Fixtures\Concerns\RecordsLocks;
 use RoundlyConsulting\Testing\Fixtures\LockRecorder;
 
+// Variant A — model is subclassable:
 final class RecordingCoupon extends Coupon { use RecordsLocks; }
 
 LockRecorder::flush();
 DB::transaction(fn () => RecordingCoupon::query()->lockForUpdate()->get());
-
-expect(LockRecorder::recorded())->toHaveCount(1)
-    ->and(LockRecorder::recorded()[0]['transactionDepth'])->toBe(1); // depth is the load-bearing datum
+expect(LockRecorder::recorded()[0]['transactionDepth'])->toBe(1); // depth killed LockedUpdate
 ```
 
-**Variant B** — the model is not subclassable / the lock is buried in an action: install
-`LockRecordingGrammar`, which compiles the lock to a trailing `/* lock-for-update */` SQL comment
-that runs unchanged and is observed via `DB::listen()`.
+Variant B installs `LockRecordingGrammar`, which compiles the lock to a trailing
+`/* lock-for-update */` SQL comment observed via `DB::listen()` — for when the model is not
+subclassable. **Bug they prevent:** the alerts #26 races (an alert that never opened; a tier
+paged twice) and the shops oversell, all invisible on SQLite otherwise.
 
-```php
-use RoundlyConsulting\Testing\Fixtures\LockRecordingGrammar;
-
-$connection = DB::connection();
-$connection->setQueryGrammar(new LockRecordingGrammar($connection));
-
-LockRecorder::flush();
-LockRecorder::listenForMarkers();
-DB::transaction(fn () => Shop::query()->lockForUpdate()->get());
-
-expect(LockRecorder::recorded()[0]['sql'])->toContain('/* lock-for-update */');
-```
-
-## The database-driver matrix
-
-`DriverMatrix` runs a suite across drivers so a SQLite-only suite doesn't miss what the engines
-disagree on (a `LIKE` without `ESCAPE` is green on postgres, zero rows on SQLite).
+`DriverMatrix` runs a suite across drivers so a SQLite-only run doesn't miss what the engines
+disagree on — **translatable #39**: a `LIKE` without `ESCAPE` is green on Postgres and
+returns zero rows on SQLite.
 
 ```php
 use RoundlyConsulting\Testing\Database\DriverMatrix;
 
-// in a TestCase::defineEnvironment()
-DriverMatrix::configure($app);
-
-// skip a driver-specific case visibly on the wrong leg
-it('uses a jsonb column')->skip(fn () => DriverMatrix::driver() !== 'pgsql');
+DriverMatrix::configure($app);                              // in TestCase::defineEnvironment()
+it('uses jsonb')->skip(fn () => DriverMatrix::driver() !== 'pgsql');
 ```
 
-`configure()` points the `testing` connection at `TESTING_DB_DRIVER` (default: in-memory SQLite
-with foreign keys on). The pgsql / mysql legs read `TESTING_DB_{HOST,PORT,DATABASE,USERNAME,PASSWORD}`
-— the same variables the postgres CI job already exports.
+`configure()` points the `testing` connection at `TESTING_DB_DRIVER` (default: in-memory
+SQLite, foreign keys on); the pgsql/mysql legs read `TESTING_DB_{HOST,PORT,DATABASE,USERNAME,PASSWORD}`.
+
+## For applications
+
+A plain Laravel app — **no roundly package, no Testbench, no base-class change** — gets the
+app-usable subset through the static `Assert` or the Pest expectations directly:
+
+```php
+use RoundlyConsulting\Testing\Assert;
+
+it('has a runnable migration order', function (): void {
+    expect(database_path('migrations'))->toHaveRunnableMigrationOrder();
+});
+
+it('reads every services key it relies on from the shipped config', function (): void {
+    // Forward-only: an app's config legitimately carries keys read by vendor packages.
+    expect(config_path('services.php'))->toSatisfyConfigContract(app_path(), ['reverse' => false]);
+});
+
+it('does not leak credentials through artisan about', function (): void {
+    expect('environment')->toLeakNoSecrets(
+        secrets: [config('services.stripe.secret')],
+        mustRender: ['Application Name'],
+    );
+});
+```
+
+Applicable to apps: the migration order (+ real-engine runner + negative control),
+forward config contract (reverse opt-in), the `about` secret capture, the model-swap proof
+(apps consume config-swappable vendor models too), the lock recorders, `DriverMatrix`, and
+every arch preset except `runtimeRequireIsWhitelisted` (roundly-specific whitelist — but
+`alsoAllow` makes even that usable). Every assertion also has a static `Assert::…()` mirror
+for plain-PHPUnit suites.
 
 ## Testing
 
