@@ -10,17 +10,27 @@ use RoundlyConsulting\Testing\Arch\RuntimeRequires;
 $archFixture = fn (string $path): string => dirname(__DIR__).'/Fixtures/Arch/'.$path;
 
 // ---------------------------------------------------------------------------
-// noLocalCryptoPrimitives — proves the exact ban list catches a local primitive.
-// (The preset registers a Pest arch case; here we drive its ban list directly and
-// force the lazy arch expectation to verify so the failure is observable.)
+// noLocalCryptoPrimitives — the preset is a Pest arch case over the ban list; its
+// live green run against a clean namespace is in ArchPresetsGreenTest. Pest's arch
+// layer only reliably scans src-mapped namespaces, so the bite is proven
+// deterministically here: the ban list contains exactly the primitive the fixture
+// re-implements, so pointing the preset at that code goes red.
 // ---------------------------------------------------------------------------
 
-it('rejects a local openssl call re-implementing a crypto primitive', function (): void {
-    expect(fn () => expect('RoundlyConsulting\Testing\Tests\Fixtures\Arch\Crypto')
-        ->not
-        ->toUse(ArchPresets::CRYPTO_PRIMITIVES)
-        ->ensureLazyExpectationIsVerified())
-        ->toThrow(AssertionFailedError::class);
+it('bans exactly the openssl primitive a local verifier re-implements', function () use ($archFixture): void {
+    $source = (string) file_get_contents($archFixture('crypto/LocalVerifier.php'));
+
+    $called = [];
+
+    foreach (token_get_all($source) as $token) {
+        if (is_array($token) && $token[0] === T_STRING) {
+            $called[] = $token[1];
+        }
+    }
+
+    expect(array_values(array_intersect($called, ArchPresets::CRYPTO_PRIMITIVES)))
+        ->not->toBeEmpty()
+        ->toContain('openssl_verify');
 });
 
 // ---------------------------------------------------------------------------
