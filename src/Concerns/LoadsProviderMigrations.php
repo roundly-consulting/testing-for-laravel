@@ -6,7 +6,7 @@ namespace RoundlyConsulting\Testing\Concerns;
 
 use Illuminate\Support\ServiceProvider;
 use PHPUnit\Framework\Assert;
-use ReflectionClass;
+use RoundlyConsulting\Testing\Support\ProviderMigrationDirectory;
 
 /**
  * Loads a package's migrations by pointing at its *service provider*, never by
@@ -48,30 +48,6 @@ trait LoadsProviderMigrations
             return $source;
         }
 
-        $fileName = (new ReflectionClass($source))->getFileName();
-
-        Assert::assertIsString($fileName, "Could not locate the file for provider `{$source}`.");
-
-        // Walk up from the provider file (typically src/) looking for the package's
-        // database/migrations directory.
-        $directory = dirname($fileName);
-
-        for ($depth = 0; $depth < 6; $depth++) {
-            $candidate = $directory.'/database/migrations';
-
-            if (is_dir($candidate)) {
-                return $candidate;
-            }
-
-            $parent = dirname($directory);
-
-            if ($parent === $directory) {
-                break;
-            }
-
-            $directory = $parent;
-        }
-
-        Assert::fail("Could not locate a database/migrations directory for provider `{$source}`.");
+        return ProviderMigrationDirectory::locate($source);
     }
 }
