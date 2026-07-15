@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace RoundlyConsulting\Testing\Expectations;
 
 use Closure;
+use RoundlyConsulting\Testing\Arch\SwappableModels;
 use RoundlyConsulting\Testing\Assert;
 use RoundlyConsulting\Testing\Assertions\AboutSecrets;
 use RoundlyConsulting\Testing\Assertions\ConfigContract\ConfigContract;
@@ -86,6 +87,12 @@ final class Expectations
 
         expect()->extend('toHonourModelSwap', function (string $subclass, Closure $exercise): mixed {
             ModelSwap::assert((string) $this->value, $subclass, $exercise);
+
+            return $this;
+        });
+
+        expect()->extend('toBeSwappableVia', function (string $configKey): mixed {
+            SwappableModels::assertEntry((string) $this->value, $configKey);
 
             return $this;
         });

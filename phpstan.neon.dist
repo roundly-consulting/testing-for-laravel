@@ -9,6 +9,10 @@ parameters:
         # test suite (Expectations proven to register both ways).
         - src/Expectations/Expectations.php
         - src/Pest/Plugin.php
+        # Registers Pest arch()/it()/expect() cases; the closures' $this is the Pest
+        # expectation, resolved at runtime. Not statically analysable in isolation; the
+        # presets are exercised by this package's own ArchTest and the preset self-tests.
+        - src/Arch/ArchPresets.php
     ignoreErrors:
         # DriverMatrix is a dev-only test helper: reading TESTING_DB_* env at test time
         # is its whole purpose (config is never cached in a Testbench run). The
