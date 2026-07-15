@@ -15,4 +15,6 @@ parameters:
         # test fixtures under tests/, outside the analysed paths).
         -
             identifier: trait.unused
-            path: src/Fixtures/Concerns/CountsCreations.php
+            paths:
+                - src/Fixtures/Concerns/CountsCreations.php
+                - src/Fixtures/Concerns/RecordsLocks.php
