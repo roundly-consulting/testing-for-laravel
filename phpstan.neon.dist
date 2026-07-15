@@ -10,6 +10,12 @@ parameters:
         - src/Expectations/Expectations.php
         - src/Pest/Plugin.php
     ignoreErrors:
+        # DriverMatrix is a dev-only test helper: reading TESTING_DB_* env at test time
+        # is its whole purpose (config is never cached in a Testbench run). The
+        # "env outside config/" rule targets app runtime code, not a matrix entry point.
+        -
+            identifier: larastan.noEnvCallsOutsideOfConfig
+            path: src/Database/DriverMatrix.php
         # Fixture-support trait shipped for consumers' suites; nothing in this package's
         # own src/ uses it, so PHPStan cannot see a using class (it is exercised by the
         # test fixtures under tests/, outside the analysed paths).
