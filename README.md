@@ -4,8 +4,9 @@ Dev-only test machinery for Laravel packages and applications: a Testbench base 
 case, before-boot model swaps, provider-class migration loading, and Pest expectations
 that are built so they can **always fail** — no vacuous green.
 
-> Status: early build (Phase A). Today it ships the base test cases and the structural
-> migration-order pin. Config-contract, about-secret, model-swap and arch-preset
+> Status: early build (Phase B). Today it ships the base test cases, the structural
+> migration-order pin, a real-engine migration runner with a negative control, and the
+> publish-only migration guards. Config-contract, about-secret, model-swap and arch-preset
 > assertions land in later phases.
 
 ## Requirements
@@ -61,6 +62,54 @@ use RoundlyConsulting\Testing\Assert;
 
 Assert::migrationsRunInDependencyOrder(database_path('migrations'), expectedForeignKeys: 19);
 ```
+
+## The real-engine runner and its negative control
+
+The structural pin is engine-independent, but the definitive proof is running the migrations
+against a real database. `expect(...)->toApplyOnConnection()` applies every migration, in
+directory order, against a live connection from an empty database — on pgsql/mysql that means
+every foreign key must land on a table that already exists.
+
+```php
+it('applies clean on postgres', function (): void {
+    expect(database_path('migrations'))->toApplyOnConnection('pgsql');
+})->skip(fn (): bool => ! test()->connectionAvailable('pgsql'), 'no pgsql');
+```
+
+A green foreign-key test proves nothing until you have watched the engine *reject* the broken
+order. `toRejectBrokenOrderOnConnection()` is that negative control: `$reorder` deliberately
+breaks the order, and the expectation passes only if the engine refuses to apply it. If the
+engine **accepts** the broken order — because it does not enforce foreign keys (SQLite) — the
+check is vacuous and fails loudly, so you can never mistake "sqlite doesn't care" for a pass.
+
+```php
+expect(database_path('migrations'))->toRejectBrokenOrderOnConnection(
+    fn (array $files): array => array_reverse($files),
+    'pgsql',
+);
+```
+
+Gate these on a driver being present so a suite with no pgsql/mysql *skips visibly* rather than
+passing green — `MigrationRunner::connectionIsAvailable('pgsql')` (mirrored on the base test case
+as `connectionAvailable()`) is a boolean you can hand to Pest's `->skip()`.
+
+## Publish-only migration guards
+
+The fleet publishes migrations timestamped rather than auto-loading them (auto-load + publish
+runs both copies — a duplicate-table failure). Two expectations pin the policy on a service
+provider:
+
+```php
+// The package's database/migrations must NOT be registered with the migrator:
+expect(PasskeysServiceProvider::class)->toNotAutoLoadMigrations();
+
+// Every source publishes to a timestamped database_path('migrations/<Y_m_d_His>_<name>.php'):
+expect(PasskeysServiceProvider::class)->toPublishMigrationsTimestamped('passkeys-migrations', 3);
+```
+
+The migrations directory defaults to the provider's own (resolved by reflection); pass an
+explicit path to override. Both mirror on `Assert::doesNotAutoLoadMigrations()` and
+`Assert::publishesMigrationsTimestamped()`.
 
 ## The package base test case
 
