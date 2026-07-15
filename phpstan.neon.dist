@@ -1,0 +1,11 @@
+parameters:
+    level: 7
+    paths:
+        - src
+    excludePaths:
+        # These bind Pest's expect()->extend() closures ($this is the expectation,
+        # resolved by Pest at runtime) and Pest's @internal Bootable plugin contract.
+        # Neither is statically analysable in isolation; both are exercised by the
+        # test suite (Expectations proven to register both ways).
+        - src/Expectations/Expectations.php
+        - src/Pest/Plugin.php
