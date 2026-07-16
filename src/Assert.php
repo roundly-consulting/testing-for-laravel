@@ -12,6 +12,7 @@ use RoundlyConsulting\Testing\Assertions\ConfigContract\ConfigContract;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationAutoload;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationGraph;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationPublish;
+use RoundlyConsulting\Testing\Assertions\Migrations\MigrationRollback;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationRunner;
 use RoundlyConsulting\Testing\Assertions\ModelSwap;
 
@@ -66,6 +67,23 @@ final class Assert
         string $connection,
     ): void {
         MigrationRunner::brokenOrderIsRejectedOnConnection($migrationsDir, $reorder, $connection);
+    }
+
+    /**
+     * Secondary escape hatch for `expect($dir)->toRollBackCleanly(...)`: pin that every
+     * migration in the set declares a non-empty `down()` (structural — no engine needed,
+     * fails by filename), and, when $connection is given, that the set really unwinds to
+     * an empty schema on that live connection.
+     *
+     * @param  int  $expectedMigrations  guard-the-guard: pin the file count so the check cannot
+     *                                   pass over an empty or relocated directory
+     */
+    public static function migrationsRollBackCleanly(
+        string $migrationsDir,
+        int $expectedMigrations,
+        ?string $connection = null,
+    ): void {
+        MigrationRollback::assert($migrationsDir, $expectedMigrations, $connection);
     }
 
     /**
