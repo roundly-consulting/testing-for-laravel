@@ -1,8 +1,8 @@
 # Testing for Laravel
 
 **The test suite that can't lie to you.** Dev-only test machinery for Laravel packages
-and applications — base test cases, a structural migration-order pin, a rollback pin, a
-both-directions config contract, a secret-safe `about` capture, a model-swap proof, lock
+and applications — base test cases, a structural migration-order pin, a real-engine
+runner, a both-directions config contract, a secret-safe `about` capture, a model-swap proof, lock
 recorders, a driver matrix, and seven architecture presets. Every assertion is built so it
 **can always fail**: no vacuous green, no assertion that passes because it never really ran.
 
@@ -84,7 +84,7 @@ count so the check can never pass over an empty parse.
 ### Real-engine runner and its negative control
 
 ```php
-expect($migrationsDir)->toApplyOnConnection(string $connection);
+expect($migrationsDir)->toApplyOnConnection(string $connection, ?int $migrations = null);
 expect($migrationsDir)->toRejectBrokenOrderOnConnection(Closure $reorder, string $connection);
 ```
 
@@ -93,7 +93,7 @@ a live database.
 
 ```php
 it('applies on postgres', function (): void {
-    expect(database_path('migrations'))->toApplyOnConnection('pgsql');
+    expect(database_path('migrations'))->toApplyOnConnection('pgsql', migrations: 14);
 })->skip(fn (): bool => ! test()->connectionAvailable('pgsql'), 'no postgres');
 
 it('rejects a broken order on postgres', function (): void {
@@ -110,6 +110,11 @@ control — it passes only if the engine refuses the reordered set, and **fails 
 the engine accepts it (a driver that does not enforce foreign keys, like SQLite, makes the
 check vacuous).
 
+`toApplyOnConnection` guards itself twice: optional `migrations:` pins the file count so the
+check cannot pass over an empty or relocated directory, and a set that applies without
+creating a single table **fails** — "the migrations applied cleanly" is true of an empty
+`up()` and proves nothing. Pin the count wherever you adopt it.
+
 `PackageTestCase` registers the `pgsql` connection (from `DriverMatrix`) and ships
 `connectionAvailable()` — a mirror of `MigrationRunner::connectionIsAvailable()`, which is
 what an app suite without the base case should gate on. Gate both assertions on it so a run
@@ -119,55 +124,52 @@ with no Postgres *skips visibly* instead of passing vacuously.
 > so a misconfigured CI leg reports green having asserted nothing. On a leg that exists to
 > run them, their skip count must be **zero**.
 
-### The rollback pin
+### No `down()` — and why the pgsql leg still works
+
+Roundly packages **migrate forward only**. The developer standard is explicit:
+
+> **Never define a `down()` method** — packages migrate forward only; a rollback path is
+> dead code that drifts out of sync with `up()`.
+
+So there is no rollback pin here, and **nothing in this package asks you for a `down()`**.
+That is a deliberate correction: an earlier `toRollBackCleanly` asserted the inverse of the
+standard, went red across all 30 packages it was tried on, and was deleted. 94 of the fleet's
+98 migration files ship no `down()` because they are *complying*.
+
+**The failure that looked like it needed `down()`.** Turning this package's own pgsql leg
+real surfaced 22–26 failures, every one a `relation "..." already exists`. The cause reads
+like a missing `down()`, and isn't. Testbench's `loadMigrationsFrom()` resets state by
+running `migrate:rollback` after each test; `Migrator::runMigration()` guards `down()` with
+`method_exists`, so for a compliant package that rollback is a **silent no-op**. On SQLite
+`:memory:` it never mattered — the database dies with the connection. On a real engine the
+tables survive and the **next** test dies creating them again, naming an innocent migration.
+
+**The fix is to stop asking for a rollback**, not to write 94 `down()`s.
+[`PackageTestCase`](#packagetestcase) resets a real engine by **dropping every table and
+re-migrating**, which restores the same state with zero `down()`. You get this for free by
+extending the base case — there is nothing to configure:
 
 ```php
-expect($migrationsDir)->toRollBackCleanly(int $migrations, ?string $connection = null);
+final class TestCase extends PackageTestCase
+{
+    protected function packageProviders(): array { return [WalletServiceProvider::class]; }
+    protected function migrationSources(): array { return [WalletServiceProvider::class]; }
+}
 ```
 
-Two halves in one expectation, and the split is the point.
+On SQLite `:memory:` the reset does nothing at all — the connection already is the reset —
+so that path is untouched and costs nothing.
 
-**Structural — needs no engine.** Every migration in the set declares a non-empty `down()`.
-This is reflection over the migration source, so it bites on **every** leg, including a
-SQLite-only local run, and it fails **by filename**:
+> **Why not `RefreshDatabase`?** It migrates once and wraps each test in a transaction. That
+> adds a transaction level, and [the lock recorders](#lock-recorders) assert on
+> `transactionDepth` — the datum that condemned the deleted `LockedUpdate` helper, whose lock
+> landed in a savepoint released before the ledger write. A drop is pure DDL and opens no
+> transaction, so a test observes its own depth and nothing else's. Drop-and-remigrate is the
+> correct `down()`-free reset.
 
-```php
-it('can be rolled back', function (): void {
-    expect(database_path('migrations'))->toRollBackCleanly(migrations: 14);
-});
-```
-
-**Behavioural — engine-gated.** Name a connection and the set is also applied and then
-unwound for real, asserting it leaves an empty schema behind:
-
-```php
-it('rolls back on postgres', function (): void {
-    expect(database_path('migrations'))->toRollBackCleanly(migrations: 14, connection: 'pgsql');
-})->skip(fn (): bool => ! test()->connectionAvailable('pgsql'), 'no postgres');
-```
-
-Keep them as **two tests**: the structural one runs everywhere, the behavioural one skips
-visibly without Postgres. The structural half always runs first, before any DDL — that is
-what makes the failure name the right file.
-
-**Bug it prevents:** `Migrator::runMigration()` guards `down()` with `method_exists`, so a
-**missing `down()` is not an error — it is a silent no-op** (bug #1). On SQLite `:memory:`
-that never mattered: the database dies with the connection. On a real engine per-test
-rollback is the only state reset, so the table *survives* and the **next** test dies on a
-duplicate-table error **pointing at the wrong migration**. Turning this package's own pgsql
-leg real surfaced **26 failures from that one cause** — and no package in the fleet had ever
-tested it. The structural half turns that cascade into one red naming the one migration at
-fault, on the leg you already run.
-
-An empty `down() {}` is the missing-`down()` no-op with extra steps, so it fails the same
-way; the body check is tokenized, not regexed, so a `// TODO: drop the table` is not a body.
-`migrations:` is **required** rather than optional — the count pins the parse so the check
-can never pass over an empty or relocated directory, and an assertion nobody can adopt
-unpinned is one nobody can adopt vacuously.
-
-> A package that cannot roll back is a package a host cannot uninstall. The behavioural half
-> is not redundant: a `down()` that drops one of the two tables its `up()` created is
-> structurally perfect and only a real engine sees the leftover.
+**Uninstalling** a package is the host app's business, and hosts do it by dropping the tables
+the package documents — not by running a rollback path the package never tested. Forward-only
+migrations are the supported shape.
 
 ## Publish-only migration guards *(package-only)*
 
@@ -409,12 +411,13 @@ exporting them without the driver leaves the whole suite on SQLite — a "pgsql"
 never touches Postgres. See `.github/workflows/run-tests.yml` for the job to lift.
 
 **Postgres has no `:memory:`.** Testbench migrates up per test and rolls back on teardown;
-SQLite never needed the rollback because the in-memory database dies with the connection.
-On a real engine that rollback is the only thing resetting state — and `Migrator` skips
-`down()` when the method does not exist, *silently*. A migration without a correct `down()`
-therefore leaves its table behind and the next test dies on a duplicate table. Every
-migration needs a real `down()` before its suite can run on a driver leg — pin it with
-[the rollback pin](#the-rollback-pin), which catches it on SQLite, before you ever get here.
+SQLite never needed that rollback because the in-memory database dies with the connection.
+On a real engine the rollback would be the only thing resetting state — and `Migrator` skips
+`down()` when the method does not exist, *silently*, which is every roundly migration by
+standard. `PackageTestCase` therefore [resets a real engine by dropping every table and
+re-migrating](#no-down--and-why-the-pgsql-leg-still-works) instead of asking for a rollback.
+Extend the base case and a driver leg just works; write your own TestCase and this is the one
+thing you must reproduce.
 
 ## For applications
 
@@ -442,8 +445,7 @@ it('does not leak credentials through artisan about', function (): void {
 ```
 
 Applicable to apps: the migration order (+ real-engine runner + negative control), the
-rollback pin (apps ship migrations too, and an app's `down()` is what a failed deploy
-rolls back through), the forward config contract (reverse opt-in), the `about` secret
+forward config contract (reverse opt-in), the `about` secret
 capture, the model-swap proof
 (apps consume config-swappable vendor models too), the lock recorders, `DriverMatrix`, and
 every arch preset except `runtimeRequireIsWhitelisted` (roundly-specific whitelist — but
