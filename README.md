@@ -1,10 +1,10 @@
 # Testing for Laravel
 
 **The test suite that can't lie to you.** Dev-only test machinery for Laravel packages
-and applications — base test cases, a structural migration-order pin, a both-directions
-config contract, a secret-safe `about` capture, a model-swap proof, lock recorders, a
-driver matrix, and seven architecture presets. Every assertion is built so it **can
-always fail**: no vacuous green, no assertion that passes because it never really ran.
+and applications — base test cases, a structural migration-order pin, a rollback pin, a
+both-directions config contract, a secret-safe `about` capture, a model-swap proof, lock
+recorders, a driver matrix, and seven architecture presets. Every assertion is built so it
+**can always fail**: no vacuous green, no assertion that passes because it never really ran.
 
 Each helper here exists because a real bug shipped past a test that *couldn't* fail —
 a secret-leak check reading empty output, a config regex satisfied by a docblock, a
@@ -118,6 +118,56 @@ with no Postgres *skips visibly* instead of passing vacuously.
 > **Check the skip count, not the colour.** These gates skip when the engine is unreachable,
 > so a misconfigured CI leg reports green having asserted nothing. On a leg that exists to
 > run them, their skip count must be **zero**.
+
+### The rollback pin
+
+```php
+expect($migrationsDir)->toRollBackCleanly(int $migrations, ?string $connection = null);
+```
+
+Two halves in one expectation, and the split is the point.
+
+**Structural — needs no engine.** Every migration in the set declares a non-empty `down()`.
+This is reflection over the migration source, so it bites on **every** leg, including a
+SQLite-only local run, and it fails **by filename**:
+
+```php
+it('can be rolled back', function (): void {
+    expect(database_path('migrations'))->toRollBackCleanly(migrations: 14);
+});
+```
+
+**Behavioural — engine-gated.** Name a connection and the set is also applied and then
+unwound for real, asserting it leaves an empty schema behind:
+
+```php
+it('rolls back on postgres', function (): void {
+    expect(database_path('migrations'))->toRollBackCleanly(migrations: 14, connection: 'pgsql');
+})->skip(fn (): bool => ! test()->connectionAvailable('pgsql'), 'no postgres');
+```
+
+Keep them as **two tests**: the structural one runs everywhere, the behavioural one skips
+visibly without Postgres. The structural half always runs first, before any DDL — that is
+what makes the failure name the right file.
+
+**Bug it prevents:** `Migrator::runMigration()` guards `down()` with `method_exists`, so a
+**missing `down()` is not an error — it is a silent no-op** (bug #1). On SQLite `:memory:`
+that never mattered: the database dies with the connection. On a real engine per-test
+rollback is the only state reset, so the table *survives* and the **next** test dies on a
+duplicate-table error **pointing at the wrong migration**. Turning this package's own pgsql
+leg real surfaced **26 failures from that one cause** — and no package in the fleet had ever
+tested it. The structural half turns that cascade into one red naming the one migration at
+fault, on the leg you already run.
+
+An empty `down() {}` is the missing-`down()` no-op with extra steps, so it fails the same
+way; the body check is tokenized, not regexed, so a `// TODO: drop the table` is not a body.
+`migrations:` is **required** rather than optional — the count pins the parse so the check
+can never pass over an empty or relocated directory, and an assertion nobody can adopt
+unpinned is one nobody can adopt vacuously.
+
+> A package that cannot roll back is a package a host cannot uninstall. The behavioural half
+> is not redundant: a `down()` that drops one of the two tables its `up()` created is
+> structurally perfect and only a real engine sees the leftover.
 
 ## Publish-only migration guards *(package-only)*
 
@@ -363,7 +413,8 @@ SQLite never needed the rollback because the in-memory database dies with the co
 On a real engine that rollback is the only thing resetting state — and `Migrator` skips
 `down()` when the method does not exist, *silently*. A migration without a correct `down()`
 therefore leaves its table behind and the next test dies on a duplicate table. Every
-migration needs a real `down()` before its suite can run on a driver leg.
+migration needs a real `down()` before its suite can run on a driver leg — pin it with
+[the rollback pin](#the-rollback-pin), which catches it on SQLite, before you ever get here.
 
 ## For applications
 
@@ -390,8 +441,10 @@ it('does not leak credentials through artisan about', function (): void {
 });
 ```
 
-Applicable to apps: the migration order (+ real-engine runner + negative control),
-forward config contract (reverse opt-in), the `about` secret capture, the model-swap proof
+Applicable to apps: the migration order (+ real-engine runner + negative control), the
+rollback pin (apps ship migrations too, and an app's `down()` is what a failed deploy
+rolls back through), the forward config contract (reverse opt-in), the `about` secret
+capture, the model-swap proof
 (apps consume config-swappable vendor models too), the lock recorders, `DriverMatrix`, and
 every arch preset except `runtimeRequireIsWhitelisted` (roundly-specific whitelist — but
 `alsoAllow` makes even that usable). Every assertion also has a static `Assert::…()` mirror
