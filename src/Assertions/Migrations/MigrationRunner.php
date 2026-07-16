@@ -6,7 +6,6 @@ namespace RoundlyConsulting\Testing\Assertions\Migrations;
 
 use Closure;
 use Illuminate\Contracts\Config\Repository;
-use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -40,7 +39,7 @@ final class MigrationRunner
      */
     public static function applyOnConnection(string $migrationsDir, string $connection): void
     {
-        $files = self::sortedFiles($migrationsDir);
+        $files = MigrationFiles::sorted($migrationsDir);
 
         Assert::assertNotEmpty($files, "No migrations found in {$migrationsDir}.");
 
@@ -65,7 +64,7 @@ final class MigrationRunner
         Closure $reorder,
         string $connection,
     ): void {
-        $files = self::sortedFiles($migrationsDir);
+        $files = MigrationFiles::sorted($migrationsDir);
 
         Assert::assertNotEmpty($files, "No migrations found in {$migrationsDir}.");
 
@@ -130,13 +129,7 @@ final class MigrationRunner
 
         try {
             foreach ($files as $file) {
-                $migration = require $file;
-
-                if (! $migration instanceof Migration || ! method_exists($migration, 'up')) {
-                    Assert::fail("Migration file `{$file}` did not return a runnable Migration instance.");
-                }
-
-                $migration->up();
+                MigrationFiles::up($file);
             }
         } finally {
             self::dropAllTables($connection);
@@ -147,19 +140,6 @@ final class MigrationRunner
     private static function dropAllTables(string $connection): void
     {
         Schema::connection($connection)->dropAllTables();
-    }
-
-    /**
-     * @return list<string>
-     */
-    private static function sortedFiles(string $directory): array
-    {
-        Assert::assertDirectoryExists($directory, "Migrations directory does not exist: {$directory}");
-
-        $files = glob(rtrim($directory, '/').'/*.php') ?: [];
-        sort($files);
-
-        return $files;
     }
 
     /**
