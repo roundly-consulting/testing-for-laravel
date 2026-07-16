@@ -92,20 +92,32 @@ The structural pin is engine-independent; the definitive proof runs the migratio
 a live database.
 
 ```php
-expect(database_path('migrations'))->toApplyOnConnection('pgsql');
+it('applies on postgres', function (): void {
+    expect(database_path('migrations'))->toApplyOnConnection('pgsql');
+})->skip(fn (): bool => ! test()->connectionAvailable('pgsql'), 'no postgres');
 
-expect(database_path('migrations'))->toRejectBrokenOrderOnConnection(
-    fn (array $files): array => array_reverse($files),
-    'pgsql',
-);
+it('rejects a broken order on postgres', function (): void {
+    expect(database_path('migrations'))->toRejectBrokenOrderOnConnection(
+        fn (array $files): array => array_reverse($files),
+        'pgsql',
+    );
+})->skip(fn (): bool => ! test()->connectionAvailable('pgsql'), 'no postgres');
 ```
 
 **Bug it prevents:** a green FK test proves nothing until you have watched the engine
 *reject* the broken order (forms #28). `toRejectBrokenOrderOnConnection` is that negative
 control — it passes only if the engine refuses the reordered set, and **fails loudly** if
 the engine accepts it (a driver that does not enforce foreign keys, like SQLite, makes the
-check vacuous). Gate both on `MigrationRunner::connectionIsAvailable('pgsql')` (mirrored on
-the base case as `connectionAvailable()`) so a suite with no Postgres *skips visibly*.
+check vacuous).
+
+`PackageTestCase` registers the `pgsql` connection (from `DriverMatrix`) and ships
+`connectionAvailable()` — a mirror of `MigrationRunner::connectionIsAvailable()`, which is
+what an app suite without the base case should gate on. Gate both assertions on it so a run
+with no Postgres *skips visibly* instead of passing vacuously.
+
+> **Check the skip count, not the colour.** These gates skip when the engine is unreachable,
+> so a misconfigured CI leg reports green having asserted nothing. On a leg that exists to
+> run them, their skip count must be **zero**.
 
 ## Publish-only migration guards *(package-only)*
 
@@ -332,12 +344,26 @@ returns zero rows on SQLite.
 ```php
 use RoundlyConsulting\Testing\Database\DriverMatrix;
 
-DriverMatrix::configure($app);                              // in TestCase::defineEnvironment()
 it('uses jsonb')->skip(fn () => DriverMatrix::driver() !== 'pgsql');
 ```
 
-`configure()` points the `testing` connection at `TESTING_DB_DRIVER` (default: in-memory
-SQLite, foreign keys on); the pgsql/mysql legs read `TESTING_DB_{HOST,PORT,DATABASE,USERNAME,PASSWORD}`.
+`PackageTestCase` calls `DriverMatrix::configure()` for you — call it yourself only in a
+TestCase that does not extend the base case. `configure()` points the default `testing`
+connection at `TESTING_DB_DRIVER` (default: in-memory SQLite, foreign keys on) and registers
+`pgsql` and `mysql` as named connections, present-but-unreachable off a driver leg, so a
+gated assertion skips *visibly* rather than never firing.
+
+**A CI leg must export `TESTING_DB_DRIVER`.** The location vars
+(`TESTING_DB_{HOST,PORT,DATABASE,USERNAME,PASSWORD}`) only say *where* the engine is;
+exporting them without the driver leaves the whole suite on SQLite — a "pgsql" job that
+never touches Postgres. See `.github/workflows/run-tests.yml` for the job to lift.
+
+**Postgres has no `:memory:`.** Testbench migrates up per test and rolls back on teardown;
+SQLite never needed the rollback because the in-memory database dies with the connection.
+On a real engine that rollback is the only thing resetting state — and `Migrator` skips
+`down()` when the method does not exist, *silently*. A migration without a correct `down()`
+therefore leaves its table behind and the next test dies on a duplicate table. Every
+migration needs a real `down()` before its suite can run on a driver leg.
 
 ## For applications
 
