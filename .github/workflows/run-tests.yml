@@ -87,9 +87,15 @@ jobs:
 
       - name: Execute tests against postgres
         env:
+          # TESTING_DB_DRIVER is what moves the suite off sqlite. The TESTING_DB_* location
+          # vars alone only describe where the engine is: without the driver this job ran
+          # every test on sqlite and called itself a postgres leg.
+          TESTING_DB_DRIVER: pgsql
           TESTING_DB_HOST: 127.0.0.1
           TESTING_DB_PORT: 5432
           TESTING_DB_DATABASE: testing
           TESTING_DB_USERNAME: testing
           TESTING_DB_PASSWORD: secret
-        run: vendor/bin/pest --coverage --min=90
+        # Coverage is enforced on the sqlite matrix; this is a correctness leg, and
+        # re-measuring coverage doubles the slowest job for no signal.
+        run: vendor/bin/pest --ci
