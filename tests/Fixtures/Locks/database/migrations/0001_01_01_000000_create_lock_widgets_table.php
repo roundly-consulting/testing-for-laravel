@@ -15,4 +15,9 @@ return new class extends Migration
             $table->string('name')->nullable();
         });
     }
+
+    public function down(): void
+    {
+        Schema::dropIfExists('lock_widgets');
+    }
 };
