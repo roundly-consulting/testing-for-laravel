@@ -57,6 +57,19 @@ it('bites on a down() whose body is only comments', function (): void {
     expect(rollbackFailure('comment-only-down', 1))->toContain('empty body');
 });
 
+it('bites on a file that is not a migration at all', function (): void {
+    // A file the loader cannot use must fail by name, never be quietly skipped: a
+    // silently-dropped migration file is the same bug class as a silently-skipped down().
+    expect(rollbackFailure('not-a-migration', 1))
+        ->toContain('did not return a runnable Migration instance')
+        ->toContain('0001_returns_an_array.php');
+});
+
+it('bites on a migration that declares no up()', function (): void {
+    // `Migration` declares neither up() nor down(), so only an explicit guard catches it.
+    expect(rollbackFailure('no-up', 1, 'sqlite_real'))->toContain('declares no up()');
+});
+
 // ---------------------------------------------------------------------------
 // The pin — it must not be able to pass over an empty or drifted parse.
 // ---------------------------------------------------------------------------
