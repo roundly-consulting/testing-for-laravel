@@ -32,6 +32,45 @@ it('bites on a missing migrations directory', function (): void {
         ->toThrow(AssertionFailedError::class);
 });
 
+// ---------------------------------------------------------------------------
+// Guard the guard — an apply that cannot fail is not a check. Both of these
+// came from the deleted rollback pin, which is where they earned their keep.
+// ---------------------------------------------------------------------------
+
+it('passes when the optional migration count pin matches', function (): void {
+    expect(fixturePath('green/bare-constrained'))->toApplyOnConnection('sqlite_real', migrations: 2);
+});
+
+it('bites when the migration count does not match the pin', function (): void {
+    expect(fn (): mixed => expect(fixturePath('green/bare-constrained'))
+        ->toApplyOnConnection('sqlite_real', migrations: 99))
+        ->toThrow(AssertionFailedError::class, 'Expected 99 migrations');
+});
+
+it('bites on a set that applies but creates nothing', function (): void {
+    // "The migrations applied cleanly" is true of a migration whose up() is empty. Without
+    // this guard that is a green — the vacuous pass this package exists to kill.
+    expect(fn (): mixed => expect(fixturePath('creates-nothing'))->toApplyOnConnection('sqlite_real'))
+        ->toThrow(AssertionFailedError::class, 'created no tables');
+});
+
+// ---------------------------------------------------------------------------
+// The loader guards: a file the loader cannot use must fail BY NAME, never be
+// quietly skipped — a silently dropped migration is the whole bug class here.
+// ---------------------------------------------------------------------------
+
+it('bites on a file that is not a migration at all', function (): void {
+    expect(fn (): mixed => expect(fixturePath('loader/not-a-migration'))->toApplyOnConnection('sqlite_real'))
+        ->toThrow(AssertionFailedError::class, 'did not return a runnable Migration instance');
+});
+
+it('bites on a migration that declares no up()', function (): void {
+    // `Migration` declares no up(), and Migrator guards the call with method_exists, so
+    // only an explicit guard catches a migration that forgot one.
+    expect(fn (): mixed => expect(fixturePath('loader/no-up'))->toApplyOnConnection('sqlite_real'))
+        ->toThrow(AssertionFailedError::class, 'declares no up()');
+});
+
 it('passes the negative control when the engine rejects the broken order', function (): void {
     // Reversing alter-after-create runs the Schema::table() ALTER before its CREATE.
     // Even SQLite rejects "no such table", so the negative control turns green here.

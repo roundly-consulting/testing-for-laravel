@@ -12,7 +12,6 @@ use RoundlyConsulting\Testing\Assertions\ConfigContract\ConfigContract;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationAutoload;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationGraph;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationPublish;
-use RoundlyConsulting\Testing\Assertions\Migrations\MigrationRollback;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationRunner;
 use RoundlyConsulting\Testing\Assertions\ModelSwap;
 use RoundlyConsulting\Testing\Pest\Plugin;
@@ -50,20 +49,14 @@ final class Expectations
             return $this;
         });
 
-        expect()->extend('toApplyOnConnection', function (string $connection): mixed {
-            MigrationRunner::applyOnConnection((string) $this->value, $connection);
+        expect()->extend('toApplyOnConnection', function (string $connection, ?int $migrations = null): mixed {
+            MigrationRunner::applyOnConnection((string) $this->value, $connection, $migrations);
 
             return $this;
         });
 
         expect()->extend('toRejectBrokenOrderOnConnection', function (Closure $reorder, string $connection): mixed {
             MigrationRunner::brokenOrderIsRejectedOnConnection((string) $this->value, $reorder, $connection);
-
-            return $this;
-        });
-
-        expect()->extend('toRollBackCleanly', function (int $migrations, ?string $connection = null): mixed {
-            MigrationRollback::assert((string) $this->value, $migrations, $connection);
 
             return $this;
         });

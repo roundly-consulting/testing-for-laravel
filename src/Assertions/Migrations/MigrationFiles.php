@@ -11,9 +11,9 @@ use PHPUnit\Framework\Assert;
  * The one place a migration set is turned into a list of files, in the order the
  * migrator would run them (directory sort), and a file is turned into a Migration.
  *
- * Shared by {@see MigrationRunner} and {@see MigrationRollback} on purpose: two
- * assertions that claim to be about "the same migration set" must be reading the
- * literally same set, or a package can be green on one and untested by the other.
+ * Kept apart from {@see MigrationRunner} on purpose: every assertion that claims to be
+ * about "the same migration set" reads it through here, so two of them cannot silently
+ * disagree about which files the set contains.
  */
 final class MigrationFiles
 {
@@ -52,9 +52,10 @@ final class MigrationFiles
     /**
      * Apply one migration file.
      *
-     * The `method_exists` guard is not ceremony: `Migration` declares neither `up()` nor
-     * `down()`, which is exactly the hole `Migrator::runMigration()` falls through when it
-     * skips a missing `down()` in silence. Here the absence fails by name instead.
+     * The `method_exists` guard is not ceremony: `Migration` declares no `up()` at all, and
+     * `Migrator::runMigration()` guards the call with `method_exists` — so a migration that
+     * forgot its `up()` is silently skipped rather than reported. Here the absence fails by
+     * name instead.
      */
     public static function up(string $file): void
     {
