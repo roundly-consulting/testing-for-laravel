@@ -7,9 +7,10 @@ namespace RoundlyConsulting\Testing;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\ServiceProvider;
 use Orchestra\Testbench\TestCase as Orchestra;
-use RoundlyConsulting\Testing\Concerns\ConfiguresSqliteDatabase;
+use RoundlyConsulting\Testing\Assertions\Migrations\MigrationRunner;
 use RoundlyConsulting\Testing\Concerns\LoadsProviderMigrations;
 use RoundlyConsulting\Testing\Concerns\SwapsConfiguredModels;
+use RoundlyConsulting\Testing\Database\DriverMatrix;
 
 /**
  * Base Testbench test case for a roundly `*-for-laravel` package suite — the one
@@ -38,7 +39,6 @@ use RoundlyConsulting\Testing\Concerns\SwapsConfiguredModels;
  */
 abstract class PackageTestCase extends Orchestra
 {
-    use ConfiguresSqliteDatabase;
     use LoadsProviderMigrations;
     use SwapsConfiguredModels;
 
@@ -88,7 +88,7 @@ abstract class PackageTestCase extends Orchestra
      */
     protected function defineEnvironment($app): void
     {
-        $this->configureSqliteDatabase($app);
+        DriverMatrix::configure($app);
 
         $config = $app->make('config');
 
@@ -102,5 +102,21 @@ abstract class PackageTestCase extends Orchestra
     protected function defineDatabaseMigrations(): void
     {
         $this->loadMigrationSources($this->migrationSources());
+    }
+
+    /**
+     * Whether a configured connection can actually be reached — the gate for the
+     * real-engine assertions, so a run with no Postgres skips *visibly* rather than
+     * passing vacuously.
+     *
+     * ```php
+     * it('applies on postgres', function (): void {
+     *     expect($dir)->toApplyOnConnection('pgsql');
+     * })->skip(fn (): bool => ! test()->connectionAvailable('pgsql'), 'no postgres');
+     * ```
+     */
+    public function connectionAvailable(string $connection): bool
+    {
+        return MigrationRunner::connectionIsAvailable($connection);
     }
 }

@@ -4,59 +4,39 @@ declare(strict_types=1);
 
 namespace RoundlyConsulting\Testing\Tests\Support;
 
-use Illuminate\Contracts\Foundation\Application;
-use Orchestra\Testbench\TestCase;
-use RoundlyConsulting\Testing\Assertions\Migrations\MigrationRunner;
+use RoundlyConsulting\Testing\Database\DriverMatrix;
+use RoundlyConsulting\Testing\PackageTestCase;
 
 /**
- * Testbench base for the real-engine runner self-tests. It configures two named
- * connections:
+ * Testbench base for the real-engine runner self-tests.
  *
- *  - `sqlite_real` — an in-memory SQLite database (always available). It exercises the
- *    runner on every CI leg, and — because SQLite does not enforce foreign keys at DDL
- *    time — it is exactly the driver against which the negative control must FAIL loudly.
- *  - `pgsql` — read from `TESTING_DB_*` env vars, present only on the postgres CI job.
- *    A real engine rejects a child-before-parent order, which is where the negative
- *    control turns green. When the env is absent the pgsql self-tests skip *visibly*.
+ * {@see PackageTestCase} now ships the whole real-engine wiring — the `pgsql` connection
+ * and the {@see PackageTestCase::connectionAvailable()} gate — so this class no longer
+ * copies it. All it adds is one connection the base case deliberately does not have:
+ *
+ *  - `sqlite_real` — an in-memory SQLite database, pinned to SQLite on **every** leg. The
+ *    base `testing` connection follows `TESTING_DB_DRIVER`, so on the pgsql leg it is not
+ *    SQLite. These tests need a driver that does *not* enforce foreign keys at DDL time,
+ *    because that is exactly the driver against which the negative control must FAIL
+ *    loudly. Pinning it here keeps that meaning on every leg.
+ *
+ * The inherited `pgsql` connection is present but unreachable off the postgres CI job, so
+ * the pgsql self-tests skip *visibly* rather than passing vacuously.
  */
-class RealEngineTestCase extends TestCase
+class RealEngineTestCase extends PackageTestCase
 {
-    /**
-     * @param  Application  $app
-     */
-    protected function defineEnvironment($app): void
+    protected function packageProviders(): array
     {
-        $config = $app->make('config');
-
-        $config->set('database.default', 'sqlite_real');
-
-        $config->set('database.connections.sqlite_real', [
-            'driver' => 'sqlite',
-            'database' => ':memory:',
-            'prefix' => '',
-            'foreign_key_constraints' => true,
-        ]);
-
-        $config->set('database.connections.pgsql', [
-            'driver' => 'pgsql',
-            'host' => env('TESTING_DB_HOST', '127.0.0.1'),
-            'port' => env('TESTING_DB_PORT', '5432'),
-            'database' => env('TESTING_DB_DATABASE', 'testing'),
-            'username' => env('TESTING_DB_USERNAME', 'testing'),
-            'password' => env('TESTING_DB_PASSWORD', ''),
-            'charset' => 'utf8',
-            'prefix' => '',
-            'search_path' => 'public',
-            'sslmode' => 'prefer',
-        ]);
+        return [];
     }
 
     /**
-     * Whether a configured connection can be reached — used by the pgsql-gated tests to
-     * skip visibly when no real engine is present.
+     * @return array<string, mixed>
      */
-    public function connectionAvailable(string $connection): bool
+    protected function configBeforeBoot(): array
     {
-        return MigrationRunner::connectionIsAvailable($connection);
+        return [
+            'database.connections.sqlite_real' => DriverMatrix::connectionConfig('sqlite'),
+        ];
     }
 }

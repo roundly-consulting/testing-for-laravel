@@ -15,9 +15,13 @@ use Illuminate\Contracts\Foundation\Application;
  * mirror image. Only a driver matrix catches that class of bug.
  *
  * {@see self::configure()} points the app's `testing` connection at the driver named by
- * the `TESTING_DB_DRIVER` env var (default: in-memory SQLite with foreign keys ON). The
- * pgsql / mysql legs read `TESTING_DB_{HOST,PORT,DATABASE,USERNAME,PASSWORD}` — the same
- * variables the Phase B postgres CI job already exports, so it is a drop-in there.
+ * the `TESTING_DB_DRIVER` env var (default: in-memory SQLite with foreign keys ON), and
+ * registers the real-engine drivers under their own connection names.
+ *
+ * A CI job must export **`TESTING_DB_DRIVER`** to move the suite off SQLite;
+ * `TESTING_DB_{HOST,PORT,DATABASE,USERNAME,PASSWORD}` only describe *where* the engine is.
+ * Exporting the location without the driver leaves the suite on SQLite — a "pgsql" leg
+ * that never touches Postgres, which is the vacuous green this package exists to kill.
  *
  * ```php
  * // In a package TestCase::defineEnvironment():
@@ -30,7 +34,22 @@ use Illuminate\Contracts\Foundation\Application;
 final class DriverMatrix
 {
     /**
-     * Point the app's default `testing` connection at the matrix driver.
+     * Drivers registered under their own connection name by {@see self::configure()}, so a
+     * suite can address a real engine directly regardless of the leg it runs on.
+     *
+     * @var list<string>
+     */
+    private const array REAL_ENGINE_DRIVERS = ['pgsql', 'mysql'];
+
+    /**
+     * Point the app's default `testing` connection at the matrix driver, and register the
+     * real-engine connections (`pgsql`, `mysql`) from the same source of truth.
+     *
+     * The named connections deliberately **overwrite** the framework's stock ones, which
+     * read `DB_*` and point at Laravel's defaults (database `laravel`, user `root`). Those
+     * can never reach a `TESTING_DB_*`-configured CI service, so a gate on them would skip
+     * silently even with the engine up. Off a driver leg the named connections are present
+     * but unreachable — which is exactly what makes that gate skip *visibly*.
      */
     public static function configure(Application $app): void
     {
@@ -38,6 +57,10 @@ final class DriverMatrix
 
         $config->set('database.default', 'testing');
         $config->set('database.connections.testing', self::connectionConfig());
+
+        foreach (self::REAL_ENGINE_DRIVERS as $driver) {
+            $config->set("database.connections.{$driver}", self::connectionConfig($driver));
+        }
     }
 
     /**
