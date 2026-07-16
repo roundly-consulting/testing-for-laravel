@@ -14,9 +14,4 @@ return new class extends Migration
             $table->id();
         });
     }
-
-    public function down(): void
-    {
-        Schema::dropIfExists('autoloaded');
-    }
 };
