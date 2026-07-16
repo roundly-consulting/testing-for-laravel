@@ -8,31 +8,30 @@ use RoundlyConsulting\Testing\Tests\Support\MinimalPackageTestCase;
 
 uses(MinimalPackageTestCase::class);
 
-function matrixPgsqlReachable(): bool
-{
-    config()->set('database.connections.matrix_pgsql', DriverMatrix::connectionConfig('pgsql'));
-
-    try {
-        DB::connection('matrix_pgsql')->getPdo();
-
-        return true;
-    } catch (Throwable) {
-        return false;
-    } finally {
-        DB::purge('matrix_pgsql');
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Driver selection + config shape — runs on every leg.
 // ---------------------------------------------------------------------------
 
 it('defaults to sqlite when TESTING_DB_DRIVER is unset', function (): void {
-    expect(DriverMatrix::driver())->toBe('sqlite');
-});
+    expect(DriverMatrix::driver())->toBe('sqlite')
+        ->and(DriverMatrix::connectionConfig())->toMatchArray([
+            'driver' => 'sqlite',
+            'database' => ':memory:',
+            'prefix' => '',
+            'foreign_key_constraints' => true,
+        ]);
+})->skip(fn (): bool => driverEnvIsSet(), 'TESTING_DB_DRIVER is exported on this leg');
 
-it('configures an in-memory sqlite connection with foreign keys on by default', function (): void {
-    expect(DriverMatrix::connectionConfig())->toMatchArray([
+it('follows TESTING_DB_DRIVER when it is set', function (): void {
+    // The var CI must export to move a suite off sqlite. Exporting only TESTING_DB_HOST
+    // and friends leaves the suite on sqlite — a "pgsql" leg that never touches postgres.
+    expect(DriverMatrix::driver())->toBe(env('TESTING_DB_DRIVER'))
+        ->and(DriverMatrix::connectionConfig())->toMatchArray(['driver' => env('TESTING_DB_DRIVER')]);
+})->skip(fn (): bool => ! driverEnvIsSet(), 'TESTING_DB_DRIVER not exported on this leg');
+
+it('always builds the sqlite config when sqlite is named explicitly', function (): void {
+    // Leg-independent: the default branch is reachable on every leg by naming the driver.
+    expect(DriverMatrix::connectionConfig('sqlite'))->toMatchArray([
         'driver' => 'sqlite',
         'database' => ':memory:',
         'prefix' => '',
@@ -57,7 +56,17 @@ it('points the default testing connection at the matrix driver', function (): vo
     DriverMatrix::configure(app());
 
     expect(config('database.default'))->toBe('testing')
-        ->and(config('database.connections.testing.driver'))->toBe('sqlite');
+        ->and(config('database.connections.testing.driver'))->toBe(DriverMatrix::driver());
+});
+
+it('registers the real-engine connections from a single source of truth', function (): void {
+    DriverMatrix::configure(app());
+
+    // Overwriting the framework's stock pgsql/mysql connections is the point: those read
+    // DB_* and aim at database `laravel` / user `root`, which can never reach a
+    // TESTING_DB_*-configured CI service — so a gate on them skips even with the engine up.
+    expect(config('database.connections.pgsql'))->toBe(DriverMatrix::connectionConfig('pgsql'))
+        ->and(config('database.connections.mysql'))->toBe(DriverMatrix::connectionConfig('mysql'));
 });
 
 // ---------------------------------------------------------------------------
@@ -66,7 +75,15 @@ it('points the default testing connection at the matrix driver', function (): vo
 // ---------------------------------------------------------------------------
 
 it('reaches a real postgres engine on the CI pgsql leg', function (): void {
-    config()->set('database.connections.matrix_pgsql', DriverMatrix::connectionConfig('pgsql'));
+    // The base case registers `pgsql` from the matrix, so this no longer hand-rolls a
+    // connection or a reachability probe — it uses the shipped gate an adopting package uses.
+    expect(DB::connection('pgsql')->getPdo())->not->toBeNull();
+})->skip(fn (): bool => ! test()->connectionAvailable('pgsql'), 'no postgres engine configured');
 
-    expect(DB::connection('matrix_pgsql')->getPdo())->not->toBeNull();
-})->skip(fn (): bool => ! matrixPgsqlReachable(), 'no postgres engine configured');
+it('runs the whole suite on postgres when TESTING_DB_DRIVER says so', function (): void {
+    // The end-to-end proof that the driver leg is not a lie: the suite's *default*
+    // connection is postgres and it is actually open. Before TESTING_DB_DRIVER was
+    // exported, this job ran every one of these tests on sqlite.
+    expect(config('database.connections.testing.driver'))->toBe('pgsql')
+        ->and(DB::connection('testing')->getPdo()->getAttribute(PDO::ATTR_DRIVER_NAME))->toBe('pgsql');
+})->skip(fn (): bool => DriverMatrix::driver() !== 'pgsql', 'pgsql driver leg only');
