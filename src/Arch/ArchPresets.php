@@ -19,12 +19,13 @@ use PHPUnit\Architecture\Elements\ObjectDescription;
  * ```
  *
  * The presets built on Pest's arch layer ({@see self::strictTypes()},
- * {@see self::finalByDefault()}, {@see self::noLocalCryptoPrimitives()},
- * {@see self::noDebuggingLeftovers()}) return the underlying arch expectation, so
- * `->ignoring(...)` composes exactly as it does on a hand-written `arch()`. The three
- * presets Pest's arch layer cannot express ({@see self::swappableModelsAreNotFinal()},
- * {@see self::modelsResolveThroughSeam()}, {@see self::runtimeRequireIsWhitelisted()})
- * register a token/reflection `it()` case instead.
+ * {@see self::finalByDefault()}, {@see self::noLocalCryptoPrimitives()}) return the
+ * underlying arch expectation, so `->ignoring(...)` composes exactly as it does on a
+ * hand-written `arch()`. The four presets Pest's arch layer cannot express
+ * ({@see self::swappableModelsAreNotFinal()}, {@see self::modelsResolveThroughSeam()},
+ * {@see self::runtimeRequireIsWhitelisted()}, {@see self::noDebuggingLeftovers()})
+ * register a token/reflection `it()` case instead — for those, exemptions go through the
+ * `$ignoring` parameter, which is checked, rather than Pest's unchecked `->ignoring()`.
  *
  * `finalByDefault` and `swappableModelsAreNotFinal` are deliberately in tension: the
  * first wants everything final, the second forbids `final` on a config-swappable model
@@ -180,19 +181,33 @@ final class ArchPresets
     }
 
     /**
-     * No debugging leftovers anywhere: dd / dump / ray / var_dump / print_r.
+     * No debugging leftovers: dd / dump / ray / var_dump / print_r.
      *
-     * @param  list<string>  $ignoring  exemptions — pinned by {@see self::exemptionsExist()}
+     * Scanned from **source tokens**, not from Pest's arch layer. As an arch expectation this
+     * was 0-for-every-run on `ray`: the arch layer only sees a dependency whose symbol
+     * *exists*, and `acme/ray` is not in our graph by policy — so `ray` was filtered out
+     * before the ban ran and could never fail, while `dd`/`dump`/`var_dump`/`print_r` all bit.
+     * The one debug tool a developer would realistically leave behind was the exact one the
+     * preset could not catch. See {@see DebugLeftovers} for the measurement.
+     *
+     * `$srcDir` defaults to `src/` under the working directory — the same scope the arch
+     * expectation effectively had (a `dd()` under `tests/` was never reported either), so the
+     * 19 packages calling this bare keep the behaviour they had, minus the blind spot.
+     *
+     * @param  list<string>  $ignoring  class/namespace exemptions — pinned by {@see self::exemptionsExist()}
+     * @param  string|null  $srcDir  the directory to scan; defaults to `<cwd>/src`
      */
-    public static function noDebuggingLeftovers(array $ignoring = []): mixed
+    public static function noDebuggingLeftovers(array $ignoring = [], ?string $srcDir = null): mixed
     {
-        return self::exempt(
-            arch('preset: no debugging leftovers')
-                ->expect(['dd', 'dump', 'ray', 'var_dump', 'print_r'])
-                ->not
-                ->toBeUsed(),
-            $ignoring,
-        );
+        $srcDir ??= getcwd().'/src';
+
+        if ($ignoring !== []) {
+            self::exemptionsExist($ignoring);
+        }
+
+        return it('preset: no debugging leftovers', function () use ($srcDir, $ignoring): void {
+            DebugLeftovers::assert($srcDir, $ignoring);
+        });
     }
 
     /**

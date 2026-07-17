@@ -280,21 +280,33 @@ ArchPresets::swappableModelsAreNotFinal(array $map);               // [Shop::cla
 ArchPresets::noLocalCryptoPrimitives(string $namespace);           // ->ignoring(...) to exempt
 ArchPresets::modelsResolveThroughSeam(string $srcDir, string $seamDir = 'Support');
 ArchPresets::runtimeRequireIsWhitelisted(string $composerJson, array $alsoAllow = []);
-ArchPresets::noDebuggingLeftovers();                               // dd/dump/ray/var_dump/print_r
+ArchPresets::noDebuggingLeftovers(array $ignoring = [], ?string $srcDir = null); // dd/dump/ray/var_dump/print_r
 ```
 
-The four built on Pest's arch layer (`strictTypes`, `finalByDefault`,
-`noLocalCryptoPrimitives`, `noDebuggingLeftovers`) return the underlying arch expectation,
-so `->ignoring(...)` composes exactly as on a hand-written `arch()`:
+The three built on Pest's arch layer (`strictTypes`, `finalByDefault`,
+`noLocalCryptoPrimitives`) return the underlying arch expectation, so `->ignoring(...)`
+composes exactly as on a hand-written `arch()`:
 
 ```php
 ArchPresets::finalByDefault('RoundlyConsulting\Shops\Actions')->ignoring(SomeBase::class);
 ArchPresets::noLocalCryptoPrimitives('RoundlyConsulting\Passkeys')->ignoring('RoundlyConsulting\Passkeys\Attestation');
 ```
 
-The three Pest's arch layer can't express (`swappableModelsAreNotFinal`,
-`modelsResolveThroughSeam`, `runtimeRequireIsWhitelisted`) register a token/reflection
-`it()` case instead.
+The four Pest's arch layer can't express (`swappableModelsAreNotFinal`,
+`modelsResolveThroughSeam`, `runtimeRequireIsWhitelisted`, `noDebuggingLeftovers`) register
+a token/reflection `it()` case instead. For those, exemptions go through the `$ignoring`
+**parameter** — which is checked for staleness — rather than Pest's unchecked `->ignoring()`:
+
+```php
+ArchPresets::noDebuggingLeftovers(['RoundlyConsulting\Shops\Debug\Inspector']);
+```
+
+`noDebuggingLeftovers` scans `<cwd>/src` by default; pass `$srcDir` to scan elsewhere. It
+reads **source tokens** rather than Pest's arch layer for a specific reason: the arch layer
+only sees a dependency whose symbol *exists*, and `acme/ray` is not in the dependency
+graph by policy — so `ray` was filtered out before the ban ran and **could never fail**,
+while the other four bit normally. The one debug tool you'd realistically leave behind was
+the exact one the preset couldn't catch. Tokens don't care whether the function exists.
 
 **Bugs each prevents:**
 
