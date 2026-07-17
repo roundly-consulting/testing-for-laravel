@@ -11,15 +11,16 @@ use RoundlyConsulting\Testing\Arch\ArchPresets;
 
 ArchPresets::strictTypes('RoundlyConsulting\Testing');
 
-ArchPresets::finalByDefault('RoundlyConsulting\Testing')
-    ->ignoring([
-        // Abstract base — meant to be extended by each package's TestCase.
-        'RoundlyConsulting\Testing\PackageTestCase',
-        // Lock-recording fixtures extend framework Builder/Grammar and are themselves
-        // extension points for a consumer's suite.
-        'RoundlyConsulting\Testing\Fixtures\LockRecordingBuilder',
-        'RoundlyConsulting\Testing\Fixtures\LockRecordingGrammar',
-    ]);
+// Exemptions go through the parameter, not Pest's fluent ->ignoring(): the parameter form
+// also registers the pin that fails when one of these stops silencing anything. Note the
+// absence of PackageTestCase — it is abstract, and the preset now excludes abstract
+// classes by construction rather than making every package exempt its own bases.
+ArchPresets::finalByDefault('RoundlyConsulting\Testing', [
+    // Lock-recording fixtures extend framework Builder/Grammar and are themselves
+    // extension points for a consumer's suite.
+    'RoundlyConsulting\Testing\Fixtures\LockRecordingBuilder',
+    'RoundlyConsulting\Testing\Fixtures\LockRecordingGrammar',
+]);
 
 ArchPresets::noDebuggingLeftovers();
 

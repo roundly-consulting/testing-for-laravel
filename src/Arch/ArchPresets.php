@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace RoundlyConsulting\Testing\Arch;
 
+use PHPUnit\Architecture\Elements\ObjectDescription;
+
 /**
  * Seven composable architecture presets, each grounded in a bug the fleet actually
  * shipped. Call one at the top level of a Pest arch file; it registers its own case.
@@ -63,25 +65,63 @@ final class ArchPresets
     ];
 
     /**
-     * Every file under the namespace declares `declare(strict_types=1)`.
+     * Assert that every entry in an exemption list still silences something.
+     *
+     * Pest's `->ignoring(...)` accepts any string and never checks it, so a typo
+     * (`Types\Metric` for `Facades\Metric`) or an exemption that outlived its code is a
+     * **silent no-op** — the ban then applies where you believe it does not, or has a hole
+     * nobody can see. Pass exemptions through the `$ignoring` parameter of the presets
+     * below (or call this directly) to pin them.
+     *
+     * @param  list<string>  $exemptions
      */
-    public static function strictTypes(string $namespace): mixed
+    public static function exemptionsExist(array $exemptions): mixed
     {
-        return arch('preset: strict types in '.$namespace)
-            ->expect($namespace)
-            ->toUseStrictTypes();
+        return it('preset: arch exemptions all still silence something', function () use ($exemptions): void {
+            ArchExemptions::assert($exemptions);
+        });
     }
 
     /**
-     * Classes are final by default. Exempt the intentional extension points (abstract
-     * bases, swappable models) with `->ignoring(...)`.
+     * Every file under the namespace declares `declare(strict_types=1)`.
+     *
+     * @param  list<string>  $ignoring  exemptions — pinned by {@see self::exemptionsExist()}
      */
-    public static function finalByDefault(string $namespace): mixed
+    public static function strictTypes(string $namespace, array $ignoring = []): mixed
     {
-        return arch('preset: classes are final by default in '.$namespace)
+        return self::exempt(
+            arch('preset: strict types in '.$namespace)
+                ->expect($namespace)
+                ->toUseStrictTypes(),
+            $ignoring,
+        );
+    }
+
+    /**
+     * Classes are final by default. Exempt the intentional extension points (swappable
+     * models, deliberate bases) with `$ignoring`.
+     *
+     * **Abstract** classes are excluded automatically rather than needing an exemption
+     * each: `abstract final` is a PHP fatal, so an abstract class cannot satisfy this ban
+     * on any codebase. Flagging one was a false positive by construction — metrics carried
+     * seven exemptions for it — and every one of those exemptions was a hole in the ban
+     * for the concrete classes they were written next to.
+     *
+     * @param  list<string>  $ignoring  exemptions — pinned by {@see self::exemptionsExist()}
+     */
+    public static function finalByDefault(string $namespace, array $ignoring = []): mixed
+    {
+        $expectation = arch('preset: classes are final by default in '.$namespace)
             ->expect($namespace)
             ->classes()
             ->toBeFinal();
+
+        $expectation->mergeExcludeCallbacks([
+            static fn (ObjectDescription $object): bool => class_exists($object->name)
+                && $object->reflectionClass->isAbstract(),
+        ]);
+
+        return self::exempt($expectation, $ignoring);
     }
 
     /**
@@ -101,12 +141,18 @@ final class ArchPresets
      * No crypto primitive is re-implemented locally — primitives live in
      * `crypto-for-laravel`. Exempt an attestation/trust corner with `->ignoring(...)`.
      */
-    public static function noLocalCryptoPrimitives(string $namespace): mixed
+    /**
+     * @param  list<string>  $ignoring  exemptions — pinned by {@see self::exemptionsExist()}
+     */
+    public static function noLocalCryptoPrimitives(string $namespace, array $ignoring = []): mixed
     {
-        return arch('preset: no local crypto primitives in '.$namespace)
-            ->expect($namespace)
-            ->not
-            ->toUse(self::CRYPTO_PRIMITIVES);
+        return self::exempt(
+            arch('preset: no local crypto primitives in '.$namespace)
+                ->expect($namespace)
+                ->not
+                ->toUse(self::CRYPTO_PRIMITIVES),
+            $ignoring,
+        );
     }
 
     /**
@@ -135,12 +181,41 @@ final class ArchPresets
 
     /**
      * No debugging leftovers anywhere: dd / dump / ray / var_dump / print_r.
+     *
+     * @param  list<string>  $ignoring  exemptions — pinned by {@see self::exemptionsExist()}
      */
-    public static function noDebuggingLeftovers(): mixed
+    public static function noDebuggingLeftovers(array $ignoring = []): mixed
     {
-        return arch('preset: no debugging leftovers')
-            ->expect(['dd', 'dump', 'ray', 'var_dump', 'print_r'])
-            ->not
-            ->toBeUsed();
+        return self::exempt(
+            arch('preset: no debugging leftovers')
+                ->expect(['dd', 'dump', 'ray', 'var_dump', 'print_r'])
+                ->not
+                ->toBeUsed(),
+            $ignoring,
+        );
+    }
+
+    /**
+     * Apply an exemption list to a Pest arch expectation **and** register the pin that
+     * keeps it honest.
+     *
+     * Pest's own `->ignoring()` cannot be made strict from the outside: it stores whatever
+     * strings it is handed on an `@internal` expectation object, and it legitimately
+     * accepts namespaces as well as class names — so there is no interception point, and
+     * "this is not a class" is not the same as "this is stale". Routing exemptions through
+     * a parameter is the honest alternative: the list is a value we can check before
+     * handing it on.
+     *
+     * @param  list<string>  $ignoring
+     */
+    private static function exempt(mixed $expectation, array $ignoring): mixed
+    {
+        if ($ignoring === []) {
+            return $expectation;
+        }
+
+        self::exemptionsExist($ignoring);
+
+        return $expectation->ignoring($ignoring); // @phpstan-ignore-line
     }
 }

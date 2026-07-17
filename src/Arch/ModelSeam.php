@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace RoundlyConsulting\Testing\Arch;
 
 use FilesystemIterator;
+use Illuminate\Database\Eloquent\Model;
 use PHPUnit\Framework\Assert;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
@@ -16,12 +17,20 @@ use SplFileInfo;
  *
  * Two ways the seam gets bypassed, both caught here from source tokens:
  *
- *   1. `static::query()` / `self::query()` / `new static` inside a model or helper.
+ *   1. `static::query()` / `self::query()` / `new static` **inside an Eloquent model**.
  *      Late static binding resolves to the class the code *named*, not the one the host
  *      *configured* — so a "findOrCreate" helper silently creates and queries rows as
  *      the packaged class, and authorization for a host's own subclass reads empty. The
  *      correct seam resolves the configured class-string first (`self::class()::query()`)
  *      and is therefore never flagged.
+ *
+ *      This check is gated on the class actually extending {@see Model}, and that gate is
+ *      load-bearing rather than decorative. `self::query()` is only a seam bypass if
+ *      `query()` is Eloquent's — in a plain class it is a call to that class's own static
+ *      helper, and `new static` is the ordinary named-constructor idiom. Ungated, this
+ *      flagged two packages' non-model support classes for correct code. The preset is an
+ *      `it()` case with no `->ignoring()` escape, so a false positive here is
+ *      unappealable — the gate is what keeps the ban honest.
  *
  *   2. the `'<pkg>.<model-key>'` config literal appearing in a file outside the seam
  *      directory. Only the seam may read the swap key; a stray literal anywhere else is
@@ -45,10 +54,18 @@ final class ModelSeam
         $lateBinding = [];
         $strayLiterals = [];
 
-        foreach (self::phpFiles($srcDir) as $file) {
-            $tokens = self::meaningfulTokens((string) file_get_contents($file));
+        // Tokenize once, up front: deciding whether a file is a model means resolving its
+        // parent chain, and that chain can run through the other files in the set.
+        $tokenized = [];
 
-            if (self::usesLateStaticResolution($tokens)) {
+        foreach (self::phpFiles($srcDir) as $file) {
+            $tokenized[$file] = self::meaningfulTokens((string) file_get_contents($file));
+        }
+
+        $parents = self::parentChain($tokenized);
+
+        foreach ($tokenized as $file => $tokens) {
+            if (self::isModel($tokens, $parents) && self::usesLateStaticResolution($tokens)) {
                 $lateBinding[] = self::relative($srcDir, $file);
             }
 
@@ -77,6 +94,241 @@ final class ModelSeam
             .'competing resolution path: '.implode(', ', $strayLiterals)
             .". Read the key only through the {$seamDir} seam.",
         );
+    }
+
+    /**
+     * Whether the file declares an Eloquent model.
+     *
+     * Resolved from the `extends` chain, not from a single `extends Model` match: a model
+     * that reaches {@see Model} through an intermediate package base (`class Post extends
+     * PackageModel`) is still a model, and missing it would hand the ban a silent false
+     * negative. $parents carries the chain across the whole scanned set; anything that
+     * leaves the set (a base class from another package) is resolved by reflection.
+     *
+     * A class whose chain can be resolved neither way is not flagged — the check errs
+     * toward the false negative, never the unappealable false positive.
+     *
+     * @param  list<array{0: int|null, 1: string}>  $tokens
+     * @param  array<string, string>  $parents
+     */
+    private static function isModel(array $tokens, array $parents): bool
+    {
+        $class = self::declaredClass($tokens);
+
+        if ($class === null) {
+            return false;
+        }
+
+        $seen = [];
+
+        while (isset($parents[$class]) && ! isset($seen[$class])) {
+            $seen[$class] = true;
+            $class = $parents[$class];
+
+            if ($class === Model::class) {
+                return true;
+            }
+        }
+
+        // The chain left the scanned set. Reflection covers a base class that lives in
+        // another package (or in the framework) without needing it in $parents.
+        return class_exists($class) && is_subclass_of($class, Model::class);
+    }
+
+    /**
+     * Map every class declared in the scanned set to its resolved parent class.
+     *
+     * @param  array<string, list<array{0: int|null, 1: string}>>  $tokenized
+     * @return array<string, string>
+     */
+    private static function parentChain(array $tokenized): array
+    {
+        $parents = [];
+
+        foreach ($tokenized as $tokens) {
+            $class = self::declaredClass($tokens);
+            $parent = self::declaredParent($tokens);
+
+            if ($class !== null && $parent !== null) {
+                $parents[$class] = $parent;
+            }
+        }
+
+        return $parents;
+    }
+
+    /**
+     * The fully-qualified name of the first class declared in the file, or null when the
+     * file declares no named class (an interface, a trait, an enum, a plain function file).
+     *
+     * @param  list<array{0: int|null, 1: string}>  $tokens
+     */
+    private static function declaredClass(array $tokens): ?string
+    {
+        $index = self::classDeclarationIndex($tokens);
+
+        if ($index === null) {
+            return null;
+        }
+
+        $namespace = self::declaredNamespace($tokens);
+        $name = $tokens[$index + 1][1];
+
+        return $namespace === null ? $name : $namespace.'\\'.$name;
+    }
+
+    /**
+     * The fully-qualified name of the class the file's class extends, or null when it
+     * extends nothing. Resolved against the file's `use` imports and namespace, so
+     * `extends Model`, `extends EloquentModel` (aliased) and `extends \Vendor\Base` all
+     * land on the same answer.
+     *
+     * @param  list<array{0: int|null, 1: string}>  $tokens
+     */
+    private static function declaredParent(array $tokens): ?string
+    {
+        $index = self::classDeclarationIndex($tokens);
+
+        if ($index === null) {
+            return null;
+        }
+
+        $extends = $tokens[$index + 2] ?? null;
+        $parent = $tokens[$index + 3] ?? null;
+
+        if ($extends === null || $extends[0] !== T_EXTENDS || $parent === null) {
+            return null;
+        }
+
+        return self::resolveName($parent[1], self::imports($tokens), self::declaredNamespace($tokens));
+    }
+
+    /**
+     * Resolve a name as written in source to a fully-qualified class name.
+     *
+     * @param  array<string, string>  $imports  alias (lowercased) => fully-qualified name
+     */
+    private static function resolveName(string $name, array $imports, ?string $namespace): string
+    {
+        // Already fully qualified.
+        if (str_starts_with($name, '\\')) {
+            return ltrim($name, '\\');
+        }
+
+        $segments = explode('\\', $name);
+        $alias = strtolower($segments[0]);
+
+        if (isset($imports[$alias])) {
+            $segments[0] = $imports[$alias];
+
+            return implode('\\', $segments);
+        }
+
+        return $namespace === null ? $name : $namespace.'\\'.$name;
+    }
+
+    /**
+     * The file's top-level `use` imports, keyed by lowercased alias.
+     *
+     * @param  list<array{0: int|null, 1: string}>  $tokens
+     * @return array<string, string>
+     */
+    private static function imports(array $tokens): array
+    {
+        $imports = [];
+        $count = count($tokens);
+        $stop = self::classDeclarationIndex($tokens) ?? $count;
+
+        for ($i = 0; $i < $stop; $i++) {
+            if ($tokens[$i][0] !== T_USE) {
+                continue;
+            }
+
+            $name = $tokens[$i + 1] ?? null;
+
+            // `use function foo;` / `use const BAR;` import no class.
+            if ($name === null || ! in_array($name[0], [T_STRING, T_NAME_QUALIFIED], true)) {
+                continue;
+            }
+
+            $segments = explode('\\', $name[1]);
+            $alias = end($segments);
+
+            // `use Vendor\Base as PackageModel;`
+            if (($tokens[$i + 2][0] ?? null) === T_AS && isset($tokens[$i + 3])) {
+                $alias = $tokens[$i + 3][1];
+            }
+
+            $imports[strtolower($alias)] = $name[1];
+        }
+
+        return $imports;
+    }
+
+    /**
+     * @param  list<array{0: int|null, 1: string}>  $tokens
+     */
+    private static function declaredNamespace(array $tokens): ?string
+    {
+        foreach ($tokens as $i => [$id]) {
+            if ($id === T_NAMESPACE) {
+                return self::readName($tokens, $i + 1);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The index of the `class` keyword that declares the file's class, or null when there
+     * is none.
+     *
+     * @param  list<array{0: int|null, 1: string}>  $tokens
+     */
+    private static function classDeclarationIndex(array $tokens): ?int
+    {
+        $count = count($tokens);
+
+        for ($i = 0; $i < $count; $i++) {
+            if ($tokens[$i][0] !== T_CLASS) {
+                continue;
+            }
+
+            // `Foo::class` is the constant, not a declaration; `new class` is anonymous
+            // and has no name to resolve.
+            $previous = $tokens[$i - 1] ?? null;
+
+            if ($previous !== null && ($previous[1] === '::' || $previous[0] === T_NEW)) {
+                continue;
+            }
+
+            $name = $tokens[$i + 1] ?? null;
+
+            if ($name === null || $name[0] !== T_STRING) {
+                continue;
+            }
+
+            return $i;
+        }
+
+        return null;
+    }
+
+    /**
+     * Read a (possibly qualified) name starting at $offset. PHP 8 hands back a whole
+     * `A\B\C` as one T_NAME_QUALIFIED token, but a single-segment name is still T_STRING.
+     *
+     * @param  list<array{0: int|null, 1: string}>  $tokens
+     */
+    private static function readName(array $tokens, int $offset): ?string
+    {
+        $token = $tokens[$offset] ?? null;
+
+        if ($token === null) {
+            return null;
+        }
+
+        return in_array($token[0], [T_STRING, T_NAME_QUALIFIED], true) ? $token[1] : null;
     }
 
     /**
