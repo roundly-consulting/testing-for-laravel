@@ -14,23 +14,35 @@ use PHPUnit\Architecture\Elements\ObjectDescription;
  * use RoundlyConsulting\Testing\Arch\ArchPresets;
  *
  * ArchPresets::strictTypes('RoundlyConsulting\Shops');
- * ArchPresets::finalByDefault('RoundlyConsulting\Shops\Actions')->ignoring(SomeBase::class);
+ * ArchPresets::finalByDefault('RoundlyConsulting\Shops\Actions', [SomeBase::class]);
  * ArchPresets::swappableModelsAreNotFinal([Shop::class => 'shops.shop_model']);
  * ```
  *
+ * ## Exempt through `$ignoring`, never through `->ignoring()`
+ *
+ * Every preset takes an `$ignoring` parameter, and entries passed that way are rot-checked
+ * by {@see self::exemptionsExist()}: an entry that silences nothing fails.
+ *
  * The presets built on Pest's arch layer ({@see self::strictTypes()},
  * {@see self::finalByDefault()}, {@see self::noLocalCryptoPrimitives()}) return the
- * underlying arch expectation, so `->ignoring(...)` composes exactly as it does on a
- * hand-written `arch()`. The four presets Pest's arch layer cannot express
- * ({@see self::swappableModelsAreNotFinal()}, {@see self::modelsResolveThroughSeam()},
- * {@see self::runtimeRequireIsWhitelisted()}, {@see self::noDebuggingLeftovers()})
- * register a token/reflection `it()` case instead — for those, exemptions go through the
- * `$ignoring` parameter, which is checked, rather than Pest's unchecked `->ignoring()`.
+ * underlying arch expectation, so Pest's fluent `->ignoring(...)` also composes on them —
+ * **unchecked**. The same bogus entry fails through the parameter and passes green through
+ * the fluent call, and the docs used to teach the fluent one. The four presets Pest's arch
+ * layer cannot express ({@see self::swappableModelsAreNotFinal()},
+ * {@see self::modelsResolveThroughSeam()}, {@see self::runtimeRequireIsWhitelisted()},
+ * {@see self::noDebuggingLeftovers()}) register a token/reflection `it()` case and have no
+ * fluent form at all.
+ *
+ * The gap is **stated rather than fixed**. `->ignoring()` is Pest's own method on an
+ * `@internal` object whose `__destruct()` is what evaluates the expectation; intercepting it
+ * would wedge this package between Pest and that destructor, and an arch case that silently
+ * stops running is the exact failure this package exists to end. A documented gap beats a
+ * check that lies.
  *
  * `finalByDefault` and `swappableModelsAreNotFinal` are deliberately in tension: the
  * first wants everything final, the second forbids `final` on a config-swappable model
  * (shipping it was a PHP fatal error seven times). Run both — exempt the swappable
- * models from the first with `->ignoring(...)` and pin them with the second.
+ * models from the first via `$ignoring` and pin them with the second.
  */
 final class ArchPresets
 {
@@ -177,9 +189,10 @@ final class ArchPresets
 
     /**
      * No crypto primitive is re-implemented locally — primitives live in
-     * `crypto-for-laravel`. Exempt an attestation/trust corner with `->ignoring(...)`.
+     * `crypto-for-laravel`. Exempt an attestation/trust corner through `$ignoring`, which is
+     * rot-checked; Pest's fluent `->ignoring()` also works here but is not.
      *
-     * Note that `->ignoring()` is scoped to a **class**, not a function: exempting a class
+     * Note that an exemption is scoped to a **class**, not a function: exempting a class
      * to permit one primitive blinds it to all of {@see self::CRYPTO_PRIMITIVES}. Scope the
      * exemption to the smallest class that really needs it — and see that constant's
      * docblock for why `hash_equals` is not on the list.

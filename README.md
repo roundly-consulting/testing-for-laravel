@@ -211,7 +211,48 @@ The repository binding is resolved from the **declared type**, so a `$cache->get
 on a cache repository is correctly not a config read.
 
 `sectionVariables` follows offsets to **any depth**: with `['$rl' => 'pkg.rate_limiters']`,
-`$rl['public']['enabled']` counts as a read of `pkg.rate_limiters.public.enabled`.
+`$rl['public']['enabled']` counts as a read of `pkg.rate_limiters.public.enabled`. It maps a
+local (`$rl`) or a property (`'$this->config'`) alike.
+
+Both directions are reported **together**. They are independent halves computed from one
+read-set, and the forward half used to throw first — on `kubernetes-api` that masked 39 unread
+keys until the forward failure was fixed and the suite re-run.
+
+### Driver-keyed sections
+
+A section keyed by a runtime driver name — Laravel's own `database.connections.<name>` shape —
+is read by interpolating that name, and is checked:
+
+```php
+config("git.providers.{$key}.url")   // scraped as: git.providers.*.url
+```
+
+The `*` is derived from the **source tokens**, not declared by you: the driver is a runtime
+value, but the leaf (`url`) is a literal sitting right there, and that leaf is what gets
+proven. So every shipped `providers.<driver>.url` counts as read — and a shipped
+`providers.<driver>.timeout` that no read names still goes **red**. This is why the wildcard is
+not `allowUnread` wearing a hat: a dead *leaf* still bites.
+
+When the read stops *at* the hole, it is a wholesale section read — the same verdict the
+literal `config('git.providers')` has always got: covered forward, proving no leaf. Map the
+local to prove the leaves, with a `*` for the driver:
+
+```php
+$http = config("git.providers.{$this->key()}", []);   // wholesale: proves no leaf
+$http['timeout'];                                     // proves git.providers.*.timeout, once mapped
+
+'sectionVariables' => ['BaseProvider.php' => ['$http' => 'git.providers.*']],
+```
+
+A wildcard base path is a claim about which section the variable holds, and the **forward
+direction checks that claim** — a base matching nothing shipped (`git.provider.*`, a typo)
+fails rather than silently proving leaves that do not exist.
+
+**Known gap, stated rather than papered over:** a pattern proves the *leaf*, never the
+*driver*. `providers.bitbucket.url` counts as read once any driver's `url` is read. That axis
+is unprovable from config reads — the host picks the driver at runtime, and shipping config for
+a driver it never selects is correct, not dead. A driver stanza no factory can build is a real
+defect, but a *registry* one; this contract does not claim to catch it.
 
 **Bugs it prevents:**
 - **Forward** (every key the code reads is shipped) — shops #18: the whole store-credit
@@ -225,12 +266,31 @@ on a cache repository is correctly not a config read.
   a *docblock mention* and stayed green with the fix reverted. A docblock is a comment
   token here, never a read.
 
-A `config("passkeys.{$x}")` interpolation under the prefix is **flagged**, never silently
-ignored — and there is deliberately **no allow-list** for it: that check runs before the
-forward and reverse checks and consults neither, so the only remedies are a literal key or a
-`sectionVariables` offset read. `extraReadPrefixes` counts `ModelResolver::for('passkeys.…')`-style literals;
+A key that resolves to no checkable pattern is **flagged**, never silently ignored — and there
+is deliberately **no allow-list** for it: that check runs before the forward and reverse checks
+and consults neither, so the only remedies are a literal key, a driver-keyed read that names its
+leaf, or a `sectionVariables` offset read. Two shapes qualify: a hole that doesn't fill a whole
+segment (`config("pkg.drivers.{$name}x")`), and a key not built from literals and holes at all
+(`config($this->keyFor('x'))`). So does `config("pkg.{$x}")` — a hole directly under the root
+strips to a bare prefix that no forward check could test, so the most opaque shape keeps its
+pressure to name a literal.
+
 `allowUnread`/`allowUnshipped` are rot-proof (a stale entry that silences nothing is itself
 a failure); `reverse => false` is the forward-only mode for apps.
+
+**`extraReadPrefixes` counts a matching literal wherever it appears** — including where it is
+not a config key at all. `kubernetes.` is the Kubernetes API's own namespace, so an annotation
+literal `kubernetes.io/tls` scraped as a config read; a routes filename (`purchases.php`) and a
+route-name default (`alerts.health`) did the same. None is distinguishable from a real key by
+shape, so filtering them would be a guess. Instead a forward finding names the literal, the file
+it came from, and that the prefix is why it counted:
+
+```
+FORWARD — the code reads 'purchases.' keys that the config file does not ship:
+  - purchases.php  [read in PurchasesServiceProvider.php (counted because it matches extraReadPrefixes)]
+```
+
+Name keys exactly rather than blanket-prefixing.
 
 ## The secret-safe `about` capture
 
@@ -306,27 +366,48 @@ a Pest arch file; it registers its own case.
 ```php
 use RoundlyConsulting\Testing\Arch\ArchPresets;
 
-ArchPresets::strictTypes(string $namespace);                       // declare(strict_types=1) everywhere
-ArchPresets::finalByDefault(string $namespace);                    // ->ignoring(...) to exempt
+ArchPresets::strictTypes(string $namespace, array $ignoring = []);
+ArchPresets::finalByDefault(string $namespace, array $ignoring = []);
 ArchPresets::swappableModelsAreNotFinal(array $map);               // [Shop::class => 'shops.shop_model']
-ArchPresets::noLocalCryptoPrimitives(string $namespace);           // ->ignoring(...) to exempt
+ArchPresets::noLocalCryptoPrimitives(string $namespace, array $ignoring = []);
 ArchPresets::modelsResolveThroughSeam(string $srcDir, string $seamDir = 'Support', array $modelKeys = []);
 ArchPresets::runtimeRequireIsWhitelisted(string $composerJson, array $alsoAllow = []);
 ArchPresets::noDebuggingLeftovers(array $ignoring = [], ?string $srcDir = null); // dd/dump/ray/var_dump/print_r
 ```
 
-The three built on Pest's arch layer (`strictTypes`, `finalByDefault`,
-`noLocalCryptoPrimitives`) return the underlying arch expectation, so `->ignoring(...)`
-composes exactly as on a hand-written `arch()`:
+### Exempt through the `$ignoring` **parameter**, not `->ignoring()`
+
+**Every preset takes an `$ignoring` parameter. Use it.** Entries passed that way are checked:
+a name that silences nothing — a typo, or an exemption that outlived the class it excused —
+**fails**, because a hole shaped like coverage is worse than no coverage.
 
 ```php
-ArchPresets::finalByDefault('RoundlyConsulting\Shops\Actions')->ignoring(SomeBase::class);
-ArchPresets::noLocalCryptoPrimitives('RoundlyConsulting\Passkeys')->ignoring('RoundlyConsulting\Passkeys\Attestation');
+ArchPresets::finalByDefault('RoundlyConsulting\Shops\Actions', [SomeBase::class]);
+ArchPresets::noLocalCryptoPrimitives('RoundlyConsulting\Passkeys', ['RoundlyConsulting\Passkeys\Attestation']);
 ```
 
-Note that Pest's `->ignoring()` is scoped to a **class**, not a function: exempting a class
-to permit one call relaxes the *whole* ban for that class. Scope it to the smallest class
-that genuinely needs it.
+The three presets built on Pest's arch layer (`strictTypes`, `finalByDefault`,
+`noLocalCryptoPrimitives`) return the underlying arch expectation, so Pest's fluent
+`->ignoring(...)` still composes on them — **but it is not checked, and this README used to
+teach it.** The two forms are not equivalent:
+
+```php
+// Checked: a stale or misspelled entry FAILS.
+ArchPresets::finalByDefault('RoundlyConsulting\Shops\Actions', ['RoundlyConsulting\Nope']);
+
+// NOT checked: the identical bogus entry passes green, silently.
+ArchPresets::finalByDefault('RoundlyConsulting\Shops\Actions')->ignoring('RoundlyConsulting\Nope');
+```
+
+This gap is **stated rather than fixed**, because the honest fix isn't available: `->ignoring()`
+is Pest's own method on an `@internal` object whose `__destruct()` is what evaluates the
+expectation. Wrapping it to intercept the call would put this package between Pest and that
+destructor — and an arch case that silently stops running is precisely the failure this whole
+package exists to end. A documented gap beats a check that lies. Pass the parameter.
+
+Note also that `->ignoring()` and `$ignoring` alike are scoped to a **class**, not a function:
+exempting a class to permit one call relaxes the *whole* ban for that class. Scope it to the
+smallest class that genuinely needs it.
 
 **`modelsResolveThroughSeam`: declare `$modelKeys` unless every swap key you own is named
 `model`, `models`, or `*_model`.** Undeclared, its stray-literal half infers swap keys from
@@ -340,6 +421,15 @@ same shape), so name the keys instead. It's the list you already pass to
 declaring can only add coverage. A declared key that matches no literal in your source fails
 rather than pretending to cover something:
 
+The late-static-binding half fires only in a **static context**, where the called class is
+whatever the caller named. `self::` and `static::` are *forwarding* calls, so inside an
+**instance** method late static binding survives them and `self::query()` already builds for
+`$this`'s runtime class — the configured one. A `prunable()` that does so is correct, and
+routing it "through the seam" would introduce a bug, pruning a host's un-configured subclass as
+the packaged base class. The ban is also gated on the class actually extending `Model`: in a
+plain class, `query()` is just a static helper of its own and `new static` is the ordinary
+named-constructor idiom.
+
 ```php
 ArchPresets::modelsResolveThroughSeam(__DIR__.'/../src', 'Support', [
     'alerts.alert', 'alerts.health-check', 'alerts.silence-model', 'alerts.history.model',
@@ -348,8 +438,8 @@ ArchPresets::modelsResolveThroughSeam(__DIR__.'/../src', 'Support', [
 
 The four Pest's arch layer can't express (`swappableModelsAreNotFinal`,
 `modelsResolveThroughSeam`, `runtimeRequireIsWhitelisted`, `noDebuggingLeftovers`) register
-a token/reflection `it()` case instead. For those, exemptions go through the `$ignoring`
-**parameter** — which is checked for staleness — rather than Pest's unchecked `->ignoring()`:
+a token/reflection `it()` case instead. Those have **no** fluent `->ignoring()` at all — the
+`$ignoring` parameter is the only way in, which is also why it is the form to learn:
 
 ```php
 ArchPresets::noDebuggingLeftovers(['RoundlyConsulting\Shops\Debug\Inspector']);
@@ -370,7 +460,7 @@ the exact one the preset couldn't catch. Tokens don't care whether the function 
 | `finalByDefault` | accidental extension points; classes meant to be closed left open |
 | `swappableModelsAreNotFinal` | `final` on a config-swappable model — a PHP fatal the moment a host swaps it, shipped **7×** (shops #19, teams #21, advertisements #23, alerts #25, reports #33, posts #35, passkeys #37) |
 | `noLocalCryptoPrimitives` | crypto primitives (`hash`, `hash_hmac`, `openssl_*`, `sodium_*`, `random_bytes`, `base64_*`) re-implemented locally instead of in `crypto-for-laravel` (passkeys ban list). `hash_equals` is **not** banned — it *is* PHP's constant-time compare, not a copy of one, and banning it pushed callers toward `$a === $b`, a timing leak (see `CRYPTO_PRIMITIVES`) |
-| `modelsResolveThroughSeam` | `static::query()`/`self::query()`/`new static` resolving the *called* class, not the *configured* one — it broke authorization (permissions #34); also a swap literal read outside the seam — declare `$modelKeys` if your keys aren't `*_model` shaped |
+| `modelsResolveThroughSeam` | `static::query()`/`self::query()`/`new static` **in a static context** resolving the *called* class, not the *configured* one — it broke authorization (permissions #34); also a swap literal read outside the seam — declare `$modelKeys` if your keys aren't `*_model` shaped |
 | `runtimeRequireIsWhitelisted` | a third-party vendor slipping into `require` and shipping transitively into every consumer (the dependency policy as a test) |
 | `noDebuggingLeftovers` | a stray `dd`/`dump`/`ray` shipped to production |
 
@@ -380,10 +470,10 @@ These two presets pull in opposite directions **on purpose**. `finalByDefault` w
 class final; `swappableModelsAreNotFinal` forbids `final` on a config-swappable model. The
 fleet shipped `final` on a swappable model seven times under a green "everything is final"
 arch test — a documented seam that was a PHP fatal error. Run **both**: exempt the swappable
-models from the first, pin them with the second.
+models from the first (through the checked `$ignoring` parameter), pin them with the second.
 
 ```php
-ArchPresets::finalByDefault('RoundlyConsulting\Shops')->ignoring(Shop::class);
+ArchPresets::finalByDefault('RoundlyConsulting\Shops', [Shop::class]);
 ArchPresets::swappableModelsAreNotFinal([Shop::class => 'shops.shop_model']);
 ```
 
