@@ -204,6 +204,15 @@ expect(config_path('passkeys.php'))->toSatisfyConfigContract(__DIR__.'/../../src
 ]);
 ```
 
+Reads are counted from `config('pkg.key')`, `Config::get('pkg.key')`, **an injected
+`Illuminate\Contracts\Config\Repository`** (`$this->config->get('pkg.key')`, and the
+`string()`/`integer()`/`boolean()`/`array()` family), and `sectionVariables` array offsets.
+The repository binding is resolved from the **declared type**, so a `$cache->get('pkg.x')`
+on a cache repository is correctly not a config read.
+
+`sectionVariables` follows offsets to **any depth**: with `['$rl' => 'pkg.rate_limiters']`,
+`$rl['public']['enabled']` counts as a read of `pkg.rate_limiters.public.enabled`.
+
 **Bugs it prevents:**
 - **Forward** (every key the code reads is shipped) — shops #18: the whole store-credit
   feature read `shops.payments.*` while the file shipped `payment.*`, so
@@ -217,7 +226,9 @@ expect(config_path('passkeys.php'))->toSatisfyConfigContract(__DIR__.'/../../src
   token here, never a read.
 
 A `config("passkeys.{$x}")` interpolation under the prefix is **flagged**, never silently
-ignored. `extraReadPrefixes` counts `ModelResolver::for('passkeys.…')`-style literals;
+ignored — and there is deliberately **no allow-list** for it: that check runs before the
+forward and reverse checks and consults neither, so the only remedies are a literal key or a
+`sectionVariables` offset read. `extraReadPrefixes` counts `ModelResolver::for('passkeys.…')`-style literals;
 `allowUnread`/`allowUnshipped` are rot-proof (a stale entry that silences nothing is itself
 a failure); `reverse => false` is the forward-only mode for apps.
 

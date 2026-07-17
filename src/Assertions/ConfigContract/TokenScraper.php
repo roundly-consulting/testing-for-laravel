@@ -422,24 +422,46 @@ final class TokenScraper
     }
 
     /**
-     * If the variable at $i is immediately indexed by a string literal (`$var['key']`),
-     * return that key; otherwise null.
+     * The dotted path the variable at $i is indexed by, following **every** consecutive
+     * string-literal offset: `$var['a']` gives `a`, and `$var['a']['b']` gives `a.b`.
+     *
+     * Depth is the point. This used to read exactly one offset, so a package that took its
+     * config section wholesale and indexed two levels in — `$config['public']['enabled']` —
+     * registered a read of `pkg.public`, which by design does not prove anything about the
+     * leaf `pkg.public.enabled`. Every leaf therefore scraped as **unread**, a report
+     * indistinguishable from media #27 (a shipped `max_file_size` cap that never applied).
+     * `cosmos-foundation` hit exactly this on `rate_limiters.*.{enabled,per_minute,guard}`
+     * and worked around it by unrolling every leaf into a literal `config()` call — the good
+     * outcome, since the tempting one was `allowUnread`, which would have asserted a
+     * falsehood about live keys.
+     *
+     * A non-literal offset (`$var['a'][$name]`) stops the walk rather than guessing, so the
+     * read degrades to the parent path and the leaves below it stay unproven — a visible
+     * failure, never a silent pass.
      *
      * @param  list<array{0: int|null, 1: string}>  $tokens
      */
     private function offsetRead(array $tokens, int $i): ?string
     {
-        $open = $tokens[$i + 1] ?? null;
-        $key = $tokens[$i + 2] ?? null;
-        $close = $tokens[$i + 3] ?? null;
+        $segments = [];
+        $j = $i + 1;
 
-        if ($open !== null && $open[1] === '['
-            && $key !== null && $key[0] === T_CONSTANT_ENCAPSED_STRING
-            && $close !== null && $close[1] === ']') {
-            return $this->stringValue($key[1]);
+        while (true) {
+            $open = $tokens[$j] ?? null;
+            $key = $tokens[$j + 1] ?? null;
+            $close = $tokens[$j + 2] ?? null;
+
+            if ($open === null || $open[1] !== '['
+                || $key === null || $key[0] !== T_CONSTANT_ENCAPSED_STRING
+                || $close === null || $close[1] !== ']') {
+                break;
+            }
+
+            $segments[] = $this->stringValue($key[1]);
+            $j += 3;
         }
 
-        return null;
+        return $segments === [] ? null : implode('.', $segments);
     }
 
     private function stringValue(string $raw): string

@@ -231,3 +231,43 @@ it('flags an interpolated key read through an injected repository', function ():
         }
         PHP)['interpolations'])->not->toBe([]);
 });
+
+/**
+ * #6: nested offsets.
+ *
+ * `sectionVariables` mapped exactly one offset level, so a package that indexed two levels
+ * into a wholesale section registered only the parent path — and a parent read deliberately
+ * proves nothing per-leaf, so every leaf scraped as unread. Indistinguishable from a real
+ * dead key, and the tempting fix was an `allowUnread` that asserts a falsehood.
+ */
+it('reads a nested array offset as a dotted path', function (): void {
+    expect(scrapeSource(
+        "\$rl['public']['enabled'];",
+        sectionVariables: ['$rl' => 'shop.rate_limiters'],
+    )['reads'])->toBe(['shop.rate_limiters.public.enabled']);
+});
+
+it('reads offsets nested three levels deep', function (): void {
+    expect(scrapeSource(
+        "\$rl['a']['b']['c'];",
+        sectionVariables: ['$rl' => 'shop.rate_limiters'],
+    )['reads'])->toBe(['shop.rate_limiters.a.b.c']);
+});
+
+it('still reads a single array offset', function (): void {
+    expect(scrapeSource(
+        "\$rp['id'];",
+        sectionVariables: ['$rp' => 'shop.rp'],
+    )['reads'])->toBe(['shop.rp.id']);
+});
+
+/**
+ * A dynamic offset stops the walk instead of guessing: the read degrades to the parent path,
+ * so the leaves below it stay unproven and fail *visibly* rather than passing quietly.
+ */
+it('stops at a non-literal offset rather than guessing', function (): void {
+    expect(scrapeSource(
+        "\$rl['public'][\$name];",
+        sectionVariables: ['$rl' => 'shop.rate_limiters'],
+    )['reads'])->toBe(['shop.rate_limiters.public']);
+});

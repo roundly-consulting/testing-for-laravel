@@ -127,3 +127,17 @@ it('runs forward-only when reverse is disabled', function (): void {
     // reverse-dead-key ships an unread key, which forward-only must ignore.
     expect(ccConfig('reverse-dead-key'))->toSatisfyConfigContract(ccSrc('reverse-dead-key'), ['reverse' => false]);
 });
+
+/**
+ * #6, end to end: a section indexed two levels deep.
+ *
+ * `sectionVariables` handled exactly one offset level, so every leaf under a named profile
+ * scraped as unread — a report identical to media #27's genuinely-dead `max_file_size`. This
+ * is the `cosmos-foundation` shape (`rate_limiters.*.{enabled,per_minute}`), which had to be
+ * unrolled into literal `config()` reads to get a green contract.
+ */
+it('satisfies the contract through nested section-variable offsets', function (): void {
+    expect(ccConfig('nested-section-variables'))->toSatisfyConfigContract(ccSrc('nested-section-variables'), [
+        'sectionVariables' => ['Limiters.php' => ['$rl' => 'shop.rate_limiters']],
+    ]);
+});

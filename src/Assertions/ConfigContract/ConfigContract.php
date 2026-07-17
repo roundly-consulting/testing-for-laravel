@@ -91,6 +91,15 @@ final class ConfigContract
     }
 
     /**
+     * An interpolated key has **no allow-list**, and the message must not pretend otherwise.
+     *
+     * It used to advise "add it to allowUnshipped/allowUnread" — an escape that does not
+     * exist. This check runs *before* both the forward and reverse checks and consults
+     * neither list, so a reader who took the advice literally watched the identical error
+     * tell them again to do the thing they had just done. An error message that names a
+     * non-existent remedy is worse than one that names none: it costs the reader the time to
+     * discover it is lying.
+     *
      * @param  list<string>  $interpolations
      */
     private static function assertNoInterpolations(array $interpolations, string $prefix): void
@@ -100,7 +109,10 @@ final class ConfigContract
             $interpolations,
             "Interpolated or concatenated config keys under '{$prefix}.' cannot be checked: "
             .implode('; ', $interpolations)
-            .'. Make the key a literal string, or add it to allowUnshipped/allowUnread.',
+            .'. There is no allow-list for this — allowUnshipped and allowUnread are consulted only by the '
+            .'forward and reverse checks, which run after this one. Either name each key as a literal string, '
+            .'or read the parent section wholesale into a variable and index it with literal offsets '
+            ."(\$section['driver']), mapping that variable through the sectionVariables option.",
         );
     }
 
