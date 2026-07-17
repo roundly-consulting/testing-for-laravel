@@ -57,6 +57,14 @@ it('rejects a new static instantiation that bypasses the configured seam', funct
         ->toThrow(AssertionFailedError::class);
 });
 
+it('accepts a non-model class using new static as a named constructor', function () use ($archFixture): void {
+    // Reported on `options`, whose BaseOption::for()/make() are built on `new static` —
+    // BaseOption is the abstract class hosts extend to define a setting, not a model, and
+    // `new static` is the only way ThemeOption::for($user) returns a ThemeOption. The
+    // preset's docblock scoped the rule to models; the implementation did not.
+    ModelSeam::assert($archFixture('seam/non-model-query'));
+});
+
 it('accepts a non-model class calling its own static query() helper', function () use ($archFixture): void {
     // The regression pin. The ban matched the bare token `self::query(`, which is only a
     // seam bypass when query() is Eloquent's. This fixture is not a model: `self::query()`

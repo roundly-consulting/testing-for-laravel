@@ -18,8 +18,20 @@ use Illuminate\Database\Eloquent\Builder;
  * (approvals' ApprovalChecker, and jwt). The preset ships as an `it()` case with no
  * `->ignoring()` escape, so that verdict was unappealable on correct code.
  */
-final class ApprovalChecker
+class ApprovalChecker
 {
+    /**
+     * `new static` on a non-model is the ordinary named-constructor idiom, not a seam
+     * bypass: `options`' BaseOption::for()/make() are built on it, and it is the only way
+     * `ThemeOption::for($user)` can return a ThemeOption. The preset flagged it there too
+     * — and `new static` is also the correct *fix* for jwt's bug, so the ungated ban
+     * forbade correct code in both directions.
+     */
+    public static function make(): static
+    {
+        return new static;
+    }
+
     public static function class(): string
     {
         $model = config('arch.record_model');
