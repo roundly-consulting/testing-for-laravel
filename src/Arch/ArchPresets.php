@@ -160,11 +160,29 @@ final class ArchPresets
      * Models resolve their (possibly host-swapped) class only through the seam: no
      * `static::query()` / `self::query()` / `new static`, and the swap config literal
      * appears only inside `$seamDir`.
+     *
+     * **Declare `$modelKeys` unless every swap key you own is `model` / `models` / `*_model`
+     * shaped.** Left empty, the stray-literal half infers swap keys from key *shape*, and so
+     * covers only the keys named that way — `alerts` got one seam of four, and a stray
+     * `config('alerts.alert')` stayed green. Widening the pattern cannot fix that: in alerts'
+     * own config `silence` is a boolean and `alert` is a model, and they are the same shape.
+     * Naming the keys removes the guess; declared keys are unioned with the inferred ones, so
+     * declaring can only add coverage, and a declared key that matches nothing fails rather
+     * than pretending to cover something. The list is the same one you already pass to
+     * {@see swappableModelsAreNotFinal()}. See {@see ModelSeam} for the full reasoning.
+     *
+     * ```php
+     * ArchPresets::modelsResolveThroughSeam(__DIR__.'/../src', 'Support', [
+     *     'alerts.alert', 'alerts.health-check', 'alerts.silence-model', 'alerts.history.model',
+     * ]);
+     * ```
+     *
+     * @param  list<string>  $modelKeys  the swap keys to police; declared beats inferred
      */
-    public static function modelsResolveThroughSeam(string $srcDir, string $seamDir = 'Support'): mixed
+    public static function modelsResolveThroughSeam(string $srcDir, string $seamDir = 'Support', array $modelKeys = []): mixed
     {
-        return it("preset: models resolve through the {$seamDir} seam, not late static binding", function () use ($srcDir, $seamDir): void {
-            ModelSeam::assert($srcDir, $seamDir);
+        return it("preset: models resolve through the {$seamDir} seam, not late static binding", function () use ($srcDir, $seamDir, $modelKeys): void {
+            ModelSeam::assert($srcDir, $seamDir, $modelKeys);
         });
     }
 

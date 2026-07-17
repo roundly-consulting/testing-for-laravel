@@ -36,6 +36,48 @@ use SplFileInfo;
  *      directory. Only the seam may read the swap key; a stray literal anywhere else is
  *      a second, competing resolution path that will drift from the seam.
  *
+ * ## Declare your swap keys — key *shape* is a floor, not a guarantee
+ *
+ * Given no `$modelKeys`, the stray-literal half infers swap keys **by key shape** (a
+ * `model` / `models` / `*_model` segment). Measured across the ten packages that adopt this
+ * preset, that inference is **complete for nine** and shortchanges exactly one — but you
+ * cannot tell which you are without checking, and that is the whole problem:
+ *
+ * `alerts` invites swapping four models. Only `alerts.history.model` has a `model` segment.
+ * `alerts.silence-model` is *hyphenated* where the pattern tests for an underscore, and
+ * `alerts.alert` / `alerts.health-check` carry no `model` segment at all — so a stray
+ * `config('alerts.alert')` left the preset **green**, covering one seam of four while
+ * looking authoritative. Covering 1-of-4 while looking authoritative is worse than covering
+ * nothing: it invites a package to delete the bespoke rule that was doing the real work.
+ *
+ * **Widening the pattern cannot fix this.** In alerts' own config `alerts.silence` is a
+ * **boolean** and `alerts.job` is a **job class**, and both are shape-identical to
+ * `alerts.alert`, a **model**. Any pattern loose enough to catch `alerts.alert` also catches
+ * those two, and this preset is an `it()` case with no `->ignoring()` escape — a false
+ * positive here is unappealable.
+ *
+ * **Resolving the key's *value* could tell them apart** — `config('alerts.silence')` is
+ * `true`, `config('alerts.alert')` is a `Model` subclass — and that is exact rather than a
+ * guess. It is deliberately **not** done here, for one reason: it would make the strength of
+ * an arch assertion depend on whether the arch file happens to be bound to a TestCase.
+ * Pest binds a test case per directory and an arch file is not test-cased automatically (see
+ * alerts' own `Pest.php`, which binds `ArchTest.php` by hand precisely so a config-reading
+ * preset works). A package that forgot that binding would silently drop back to the shape
+ * floor — an invisible, environment-dependent subset, which is the failure class this
+ * parameter exists to end. A declaration reads the same with or without an app.
+ *
+ * So **declare the keys**: pass `$modelKeys` and they are policed by name, with no shape
+ * convention required. This mirrors {@see SwappableModels}, where the caller already writes
+ * the same keys down as `[Model::class => 'config.key']` — so the list is one preset away in
+ * every adopting package's arch file. Declared keys are **unioned** with the inferred set,
+ * never substituted for it, so declaring can only add coverage. They are rot-proofed the way
+ * `allowUnread` and arch exemptions are: a key that appears nowhere in the source fails
+ * rather than silently covering nothing.
+ *
+ * The residual gap, stated rather than papered over: a swap key that is both unconventionally
+ * named **and** undeclared is invisible to this half. Nothing here can find it, and this
+ * docblock is the only thing that will tell you so.
+ *
  * This is the assertion behind {@see ArchPresets::modelsResolveThroughSeam()}.
  */
 final class ModelSeam
@@ -44,10 +86,16 @@ final class ModelSeam
      * A config key that swaps a model: a dotted key whose final segment is `model`,
      * `models`, or ends in `_model` (e.g. `shops.shop_model`, `passkeys.model`,
      * `permissions.models.permission`). Tight enough not to trip on arbitrary strings.
+     *
+     * Always applied, and unioned with any declared `$modelKeys` — see the class docblock
+     * for why this inference is a floor, not a guarantee.
      */
     private const MODEL_KEY = '/^[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+$/';
 
-    public static function assert(string $srcDir, string $seamDir = 'Support'): void
+    /**
+     * @param  list<string>  $modelKeys  the swap keys to police; declared beats inferred
+     */
+    public static function assert(string $srcDir, string $seamDir = 'Support', array $modelKeys = []): void
     {
         Assert::assertDirectoryExists($srcDir, "Source directory does not exist: {$srcDir}");
 
@@ -64,17 +112,33 @@ final class ModelSeam
 
         $parents = self::parentChain($tokenized);
 
+        $declaredSeen = [];
+
         foreach ($tokenized as $file => $tokens) {
             if (self::isModel($tokens, $parents) && self::usesLateStaticResolution($tokens)) {
                 $lateBinding[] = self::relative($srcDir, $file);
             }
 
-            if (! self::isInSeam($srcDir, $file, $seamDir)) {
-                foreach (self::modelKeyLiterals($tokens) as $literal) {
+            // Union, never replace: declaring a key may only ever ADD coverage. Were a
+            // declaration to replace the inferred set, a package that declares three of its
+            // four keys would silently LOSE the fourth — the very failure this parameter
+            // exists to fix, re-introduced by the fix itself. Union makes coverage monotone
+            // in the declaration, so a partial list is merely partial, never a regression.
+            $literals = array_values(array_unique(array_merge(
+                self::modelKeyLiterals($tokens),
+                self::declaredKeyLiterals($tokens, $modelKeys),
+            )));
+
+            foreach ($literals as $literal) {
+                $declaredSeen[$literal] = true;
+
+                if (! self::isInSeam($srcDir, $file, $seamDir)) {
                     $strayLiterals[] = self::relative($srcDir, $file).": '{$literal}'";
                 }
             }
         }
+
+        self::assertDeclaredKeysExist($modelKeys, $declaredSeen);
 
         sort($lateBinding);
         sort($strayLiterals);
@@ -391,6 +455,68 @@ final class ModelSeam
         }
 
         return array_values(array_unique($literals));
+    }
+
+    /**
+     * The declared swap keys this file mentions — an exact literal match, with no shape
+     * inference at all. A declared key needs no naming convention, which is the entire point:
+     * `alerts.alert` and `alerts.health-check` are swap keys and look like nothing special.
+     *
+     * @param  list<array{0: int|null, 1: string}>  $tokens
+     * @param  list<string>  $modelKeys
+     * @return list<string>
+     */
+    private static function declaredKeyLiterals(array $tokens, array $modelKeys): array
+    {
+        $literals = [];
+
+        foreach ($tokens as [$id, $text]) {
+            if ($id !== T_CONSTANT_ENCAPSED_STRING) {
+                continue;
+            }
+
+            $value = self::stringValue($text);
+
+            if (in_array($value, $modelKeys, true)) {
+                $literals[] = $value;
+            }
+        }
+
+        return array_values(array_unique($literals));
+    }
+
+    /**
+     * Every declared key must actually appear in the source — anywhere, seam included.
+     *
+     * A declared key that matches no literal polices nothing, and says nothing about it:
+     * either it is a typo (`alerts.silence_model` for the hyphenated `alerts.silence-model`
+     * — exactly the confusion that motivated declaring keys in the first place) or it names a
+     * seam that has been removed. Both leave a hole shaped like coverage. This is the
+     * rot-proofing standard the config contract already holds `allowUnread` to, and
+     * {@see ArchExemptions} holds arch exemptions to.
+     *
+     * @param  list<string>  $modelKeys
+     * @param  array<string, true>  $seen
+     */
+    private static function assertDeclaredKeysExist(array $modelKeys, array $seen): void
+    {
+        $missing = [];
+
+        foreach ($modelKeys as $key) {
+            if (! isset($seen[$key])) {
+                $missing[] = $key;
+            }
+        }
+
+        sort($missing);
+
+        Assert::assertSame(
+            [],
+            $missing,
+            'These declared model-swap keys appear nowhere in the source, so they police nothing: '
+            .implode(', ', $missing).'. Either the key is a typo, or the seam it named is gone. '
+            .'A declared key that matches no literal is a hole shaped like coverage.',
+        );
     }
 
     private static function hasModelSegment(string $value): bool

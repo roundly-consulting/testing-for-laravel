@@ -94,6 +94,87 @@ it('fails on a missing source directory rather than passing vacuously', function
 });
 
 // ---------------------------------------------------------------------------
+// modelsResolveThroughSeam — $modelKeys, and the shape floor it exists to lift.
+//
+// The `alerts-shape` fixture is alerts' real key naming: `alerts.alert` and
+// `alerts.health-check` carry no `model` segment, `alerts.silence-model` is hyphenated
+// where the inference tests for an underscore, and only `alerts.history.model` is
+// conventionally shaped. Its Support/RecordResolver reads all four legitimately; its
+// Actions/StrayReader reads the three unconventional ones outside the seam.
+// ---------------------------------------------------------------------------
+
+it('pins the shape floor: an unconventionally-named stray is invisible undeclared', function () use ($archFixture): void {
+    // NOT an endorsement — this is the defect, pinned. Three stray reads sit outside the
+    // seam and the preset is green, because no `model` segment means no inferred key. This
+    // is why $modelKeys exists, and why the docblock calls inference a floor. Should a
+    // future change make this red, that is an improvement — but it must be a deliberate
+    // one, and this case is what forces the conversation.
+    ModelSeam::assert($archFixture('seam/alerts-shape'));
+
+    expect(true)->toBeTrue();
+});
+
+it('rejects unconventionally-named stray literals once they are declared', function () use ($archFixture): void {
+    // The bite. The same fixture, the same strays, the only change being that the keys are
+    // named rather than guessed at.
+    //
+    // Pinned to the *stray* message, not merely to AssertionFailedError: the rot check
+    // raises that same class from the same call, so a bare ->toThrow(AssertionFailedError)
+    // here passes with the declared-key half deleted — it was verified doing exactly that.
+    expect(fn () => ModelSeam::assert($archFixture('seam/alerts-shape'), 'Support', [
+        'alerts.alert',
+        'alerts.health-check',
+        'alerts.silence-model',
+    ]))
+        ->toThrow(AssertionFailedError::class, 'competing resolution path');
+});
+
+it('names every declared stray it found, not just the first', function () use ($archFixture): void {
+    // A message that reported one of three would send a package back for three rounds.
+    try {
+        ModelSeam::assert($archFixture('seam/alerts-shape'), 'Support', [
+            'alerts.alert',
+            'alerts.health-check',
+            'alerts.silence-model',
+        ]);
+    } catch (AssertionFailedError $e) {
+        expect($e->getMessage())
+            ->toContain('alerts.alert')
+            ->toContain('alerts.health-check')
+            ->toContain('alerts.silence-model')
+            ->toContain('StrayReader.php');
+
+        return;
+    }
+
+    $this->fail('Declared stray literals did not fail the seam assertion.');
+});
+
+it('accepts a declared key that only the seam reads', function () use ($archFixture): void {
+    // Proves the bite above is about *where* the key is read, not merely that a key was
+    // declared: `alerts.history.model` is read only by Support/RecordResolver.
+    ModelSeam::assert($archFixture('seam/alerts-shape'), 'Support', ['alerts.history.model']);
+
+    expect(true)->toBeTrue();
+});
+
+it('unions declared keys with inferred ones rather than replacing them', function () use ($archFixture): void {
+    // Were a declaration to REPLACE the inferred set, declaring an unrelated key here would
+    // drop the conventionally-named strays this fixture is built on and pass. Coverage must
+    // be monotone in the declaration: declaring can only ever add.
+    expect(fn () => ModelSeam::assert($archFixture('seam/stray-literal'), 'Support', ['arch.record_model']))
+        ->toThrow(AssertionFailedError::class, 'widgets.model');
+});
+
+it('fails a declared key that appears nowhere in the source', function () use ($archFixture): void {
+    // Rot-proofing. `alerts.silence_model` is the underscore typo of the fixture's real
+    // hyphenated `alerts.silence-model` — exactly the confusion that motivates declaring —
+    // and a declaration that matches nothing is a hole shaped like coverage.
+    expect(fn () => ModelSeam::assert($archFixture('seam/alerts-shape'), 'Support', ['alerts.silence_model']))
+        ->toThrow(AssertionFailedError::class, 'police nothing');
+});
+
+// ---------------------------------------------------------------------------
 // runtimeRequireIsWhitelisted — green, then proves-it-bites.
 // ---------------------------------------------------------------------------
 

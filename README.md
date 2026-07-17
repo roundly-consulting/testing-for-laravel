@@ -310,7 +310,7 @@ ArchPresets::strictTypes(string $namespace);                       // declare(st
 ArchPresets::finalByDefault(string $namespace);                    // ->ignoring(...) to exempt
 ArchPresets::swappableModelsAreNotFinal(array $map);               // [Shop::class => 'shops.shop_model']
 ArchPresets::noLocalCryptoPrimitives(string $namespace);           // ->ignoring(...) to exempt
-ArchPresets::modelsResolveThroughSeam(string $srcDir, string $seamDir = 'Support');
+ArchPresets::modelsResolveThroughSeam(string $srcDir, string $seamDir = 'Support', array $modelKeys = []);
 ArchPresets::runtimeRequireIsWhitelisted(string $composerJson, array $alsoAllow = []);
 ArchPresets::noDebuggingLeftovers(array $ignoring = [], ?string $srcDir = null); // dd/dump/ray/var_dump/print_r
 ```
@@ -322,6 +322,24 @@ composes exactly as on a hand-written `arch()`:
 ```php
 ArchPresets::finalByDefault('RoundlyConsulting\Shops\Actions')->ignoring(SomeBase::class);
 ArchPresets::noLocalCryptoPrimitives('RoundlyConsulting\Passkeys')->ignoring('RoundlyConsulting\Passkeys\Attestation');
+```
+
+**`modelsResolveThroughSeam`: declare `$modelKeys` unless every swap key you own is named
+`model`, `models`, or `*_model`.** Undeclared, its stray-literal half infers swap keys from
+key *shape*, so it polices only the keys named that way. That inference is complete for most
+packages and silently incomplete for the rest — `alerts` swaps four models, but only
+`alerts.history.model` is conventionally shaped, so a stray `config('alerts.alert')` outside
+the seam left the preset **green**, covering one seam of four while looking authoritative.
+Widening the pattern can't fix it (`alerts.silence` is a boolean and `alerts.alert` a model —
+same shape), so name the keys instead. It's the list you already pass to
+`swappableModelsAreNotFinal`, and declared keys are *unioned* with the inferred ones, so
+declaring can only add coverage. A declared key that matches no literal in your source fails
+rather than pretending to cover something:
+
+```php
+ArchPresets::modelsResolveThroughSeam(__DIR__.'/../src', 'Support', [
+    'alerts.alert', 'alerts.health-check', 'alerts.silence-model', 'alerts.history.model',
+]);
 ```
 
 The four Pest's arch layer can't express (`swappableModelsAreNotFinal`,
@@ -348,7 +366,7 @@ the exact one the preset couldn't catch. Tokens don't care whether the function 
 | `finalByDefault` | accidental extension points; classes meant to be closed left open |
 | `swappableModelsAreNotFinal` | `final` on a config-swappable model — a PHP fatal the moment a host swaps it, shipped **7×** (shops #19, teams #21, advertisements #23, alerts #25, reports #33, posts #35, passkeys #37) |
 | `noLocalCryptoPrimitives` | crypto primitives (`hash`, `openssl_*`, `sodium_*`, `random_bytes`, `base64_*`) re-implemented locally instead of in `crypto-for-laravel` (passkeys ban list) |
-| `modelsResolveThroughSeam` | `static::query()`/`self::query()`/`new static` resolving the *called* class, not the *configured* one — it broke authorization (permissions #34); also a swap literal read outside the seam |
+| `modelsResolveThroughSeam` | `static::query()`/`self::query()`/`new static` resolving the *called* class, not the *configured* one — it broke authorization (permissions #34); also a swap literal read outside the seam — declare `$modelKeys` if your keys aren't `*_model` shaped |
 | `runtimeRequireIsWhitelisted` | a third-party vendor slipping into `require` and shipping transitively into every consumer (the dependency policy as a test) |
 | `noDebuggingLeftovers` | a stray `dd`/`dump`/`ray` shipped to production |
 
