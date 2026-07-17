@@ -61,7 +61,9 @@ final class ConfigContract
         $dynamicSections = [];
         $origins = [];
 
-        foreach (self::sourceFiles($srcDirs) as $file) {
+        $directories = self::scanDirectories($srcDirs);
+
+        foreach (self::sourceFiles($directories) as $file) {
             $basename = basename($file);
             $scraped = $scraper->scrape($file, $sectionVariables[$basename] ?? []);
 
@@ -102,7 +104,7 @@ final class ConfigContract
         if ($reverse) {
             $report = array_merge(
                 $report,
-                self::reverseProblems($shipped, $readsForReverse, $allowUnread, $prefix, $dynamicSections),
+                self::reverseProblems($shipped, $readsForReverse, $allowUnread, $prefix, $dynamicSections, $directories),
                 self::staleAllowUnread($allowUnread, $shipped, $readsForReverse),
             );
         }
@@ -191,13 +193,25 @@ final class ConfigContract
     /**
      * The reverse direction: every shipped leaf must be read.
      *
+     * **The finding names the directories it searched, and it must keep doing so.** The scope
+     * is always finite — src + database + routes today, never "everywhere" — so "no reader"
+     * is only ever true *of the scanned scope*. Said without that qualifier, the finding is
+     * indistinguishable from a genuine dead key while advising the reader to delete a live
+     * one: `git`'s `git.webhooks.middleware` was reported dead with "nothing reads" while
+     * `routes/git-webhooks.php:9` read it, and deleting it on that report's advice would have
+     * unregistered the webhook route's middleware. A false negative merely misses a bug; this
+     * shape actively invites the reader to cause one. Widening the default scope to `routes/`
+     * closed that specific hole and cannot close the general one (a Blade view, a host app),
+     * which is why the scope is *printed* rather than merely enlarged.
+     *
      * @param  list<string>  $shipped
      * @param  list<string>  $readsForReverse
      * @param  list<string>  $allowUnread
      * @param  list<array{0: string, 1: string}>  $dynamicSections
+     * @param  list<string>  $directories
      * @return list<string>
      */
-    private static function reverseProblems(array $shipped, array $readsForReverse, array $allowUnread, string $prefix, array $dynamicSections): array
+    private static function reverseProblems(array $shipped, array $readsForReverse, array $allowUnread, string $prefix, array $dynamicSections, array $directories): array
     {
         $unread = [];
 
@@ -213,9 +227,14 @@ final class ConfigContract
 
         sort($unread);
 
-        $problem = "REVERSE — the config file ships '{$prefix}.' keys that nothing reads:\n  - "
+        $problem = "REVERSE — the config file ships '{$prefix}.' keys that no scanned file reads:\n  - "
             .implode("\n  - ", $unread)
-            ."\nRemove them, wire them up, or add them to allowUnread.";
+            ."\n\nSCOPE — only these directories were searched:\n  - "
+            .implode("\n  - ", $directories)
+            ."\nA key read from anywhere else (a Blade view, a host app, a directory not listed above) "
+            .'reads as unread here and is NOT proven dead. Confirm there is no reader outside this scope '
+            .'before deleting anything — if there is one, pass its directory as an additional srcDir '
+            .'instead of touching the key. Otherwise: remove it, wire it up, or add it to allowUnread.';
 
         $hints = self::wholesaleHints($unread, $dynamicSections);
 
@@ -335,13 +354,22 @@ final class ConfigContract
     }
 
     /**
-     * The source files to scrape: every `*.php` under each src dir, plus a sibling
-     * `database/` directory when one exists (migrations and factories read config too).
+     * The directories to scrape: each src dir, plus the sibling `database/` and `routes/`
+     * directories when they exist.
+     *
+     * `database/` was always included here on the reasoning that migrations and factories read
+     * config too. `routes/` is the same shape — a conventional package directory of PHP that
+     * reads config — and its omission was an oversight, not a policy: across the fleet, every
+     * single config read outside `src/` lives in `routes/` (git, media-library, purchases).
+     *
+     * This widening is not an amnesty. It adds *reader files*, so a key with no reader in any
+     * of these directories still fails; it only stops counting a real read as no read. The
+     * scope stays finite regardless, which is why `reverseProblems()` prints it.
      *
      * @param  string|list<string>  $srcDirs
      * @return list<string>
      */
-    private static function sourceFiles(string|array $srcDirs): array
+    private static function scanDirectories(string|array $srcDirs): array
     {
         $directories = [];
 
@@ -349,16 +377,29 @@ final class ConfigContract
             Assert::assertDirectoryExists($dir, "Source directory does not exist: {$dir}");
             $directories[$dir] = true;
 
-            $database = dirname($dir).'/database';
+            foreach (['database', 'routes'] as $sibling) {
+                $path = dirname($dir).'/'.$sibling;
 
-            if (is_dir($database)) {
-                $directories[$database] = true;
+                if (is_dir($path)) {
+                    $directories[$path] = true;
+                }
             }
         }
 
+        return array_keys($directories);
+    }
+
+    /**
+     * Every `*.php` file under the scanned directories.
+     *
+     * @param  list<string>  $directories
+     * @return list<string>
+     */
+    private static function sourceFiles(array $directories): array
+    {
         $files = [];
 
-        foreach (array_keys($directories) as $directory) {
+        foreach ($directories as $directory) {
             $iterator = new RecursiveIteratorIterator(
                 new RecursiveDirectoryIterator($directory, FilesystemIterator::SKIP_DOTS),
             );

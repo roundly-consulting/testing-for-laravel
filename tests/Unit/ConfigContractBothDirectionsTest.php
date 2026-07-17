@@ -45,7 +45,7 @@ it('keeps both halves legible when both fire', function (): void {
 
     expect($message)
         ->toContain('does not ship')
-        ->toContain('nothing reads');
+        ->toContain('no scanned file reads');
 });
 
 /**

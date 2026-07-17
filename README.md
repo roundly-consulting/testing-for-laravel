@@ -218,6 +218,37 @@ Both directions are reported **together**. They are independent halves computed 
 read-set, and the forward half used to throw first — on `kubernetes-api` that masked 39 unread
 keys until the forward failure was fixed and the suite re-run.
 
+### What gets scanned — and why a REVERSE finding is not proof of a dead key
+
+Each `$srcDirs` entry is scanned, **plus its sibling `database/` and `routes/`** when they
+exist (migrations, factories, and route files all read config). Nothing else.
+
+**That scope is finite, so a REVERSE finding means "no reader *in the scanned directories*" —
+never "no reader anywhere".** A key read from a Blade view, from a directory you did not pass,
+or from the host app scrapes as unread and is reported identically to a genuinely dead one. The
+failure message therefore **prints the directories it searched**; read that list before acting
+on a finding.
+
+This is a real gap, documented rather than papered over. It has bitten: `git.webhooks.middleware`
+was reported as a key "nothing reads" while `routes/git-webhooks.php` read it — deleting it as
+the report advised would have unregistered the webhook route's middleware. `routes/` is scanned
+by default now, but the general shape remains for any reader outside the scope.
+
+**If a finding names a key you can see a reader for, the scope is wrong — not the key.** Add the
+reader's directory:
+
+```php
+expect(config_path('media.php'))->toSatisfyConfigContract([
+    __DIR__.'/../../src',
+    __DIR__.'/../../resources/views',   // a directory the default scope misses
+]);
+```
+
+Reach for `allowUnread` only when the key is genuinely unread **or** unmappable by the scraper —
+never to silence a key you know is read from an unscanned directory. `allowUnread` asserts the
+key is not read; on a key that *is* read, that entry is simply false, and it blinds the direction
+for real. Both allow-lists are rot-checked: an entry that silences nothing fails.
+
 ### Driver-keyed sections
 
 A section keyed by a runtime driver name — Laravel's own `database.connections.<name>` shape —
