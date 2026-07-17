@@ -6,6 +6,7 @@ namespace RoundlyConsulting\Testing;
 
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Database\DatabaseManager;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\ServiceProvider;
 use Orchestra\Testbench\TestCase as Orchestra;
@@ -128,33 +129,72 @@ abstract class PackageTestCase extends Orchestra
      * `transactionDepth` — the exact datum that condemned the deleted `LockedUpdate` helper.
      * A drop is pure DDL and opens no transaction, so the depth a test observes is its own.
      *
+     * ## Why this is not gated on migrations
+     *
+     * It used to be. The reset returned early when `cachedTestMigratorProcessors === []`,
+     * reading an empty migrator cache as "this suite is not ours to reset". That cache is
+     * empty in **two** unrelated situations, and the early return could not tell them apart:
+     *
+     *   - a suite using `RefreshDatabase`, which migrates once and owns its own reset — and
+     *     which must genuinely be left alone; and
+     *   - a suite that simply **ships no migrations**, which owns nothing and is reset by
+     *     nobody.
+     *
+     * The second is not a rare shape: `query-builder`, `metrics`, `translatable` and `crypto`
+     * all ship zero migrations. For them the whole teardown was skipped, so on a real engine
+     * a fixture table built in one test survived into the next (`relation "posts" already
+     * exists` on test 2) and **every test's connection stayed open** — a monotonic climb that
+     * ends in `FATAL: sorry, too many clients already`, blamed on whatever innocent statement
+     * happened to be running when the server ran out. Invisible on `:memory:`, where the
+     * database dies with the connection and nobody counts backends.
+     *
+     * So the gate is now the thing actually being asked — {@see usesRefreshDatabaseTestingConcern()},
+     * Testbench's own discriminator, which is also what Laravel keys its self-disconnect on
+     * (`RefreshDatabase` rolls back and disconnects its transacted connections itself). Having
+     * no migrations is not a reason to skip the reset; owning a competing one is.
+     *
      * @internal Overrides Testbench's teardown hook, dispatched by trait basename.
      */
     protected function tearDownInteractsWithMigrations(): void
     {
         // In-memory SQLite needs nothing: the database dies with the connection. Leave that
-        // path exactly as Testbench wrote it.
+        // path exactly as Testbench wrote it — and never purge, because a `:memory:` suite
+        // using RefreshDatabase keeps its schema *in* the connection.
         if ($this->usesSqliteInMemoryDatabaseConnection()) {
             parent::tearDownInteractsWithMigrations();
 
             return;
         }
 
-        // Nothing loaded through loadMigrationsFrom() (a suite with no migrations, or one
-        // using RefreshDatabase, which takes Testbench's other branch) — leave it alone.
-        if ($this->cachedTestMigratorProcessors === []) {
+        // RefreshDatabase (and LazilyRefreshDatabase) migrate once and reset per test inside a
+        // transaction they roll back and disconnect themselves. Dropping their tables would
+        // destroy the schema they rely on surviving. This is the one suite shape that is
+        // genuinely not ours to reset.
+        if (static::usesRefreshDatabaseTestingConcern()) {
             parent::tearDownInteractsWithMigrations();
 
             return;
         }
 
         // Displace the down()-based rollback before delegating: emptying the cache is what
-        // makes Testbench's `foreach (...) $migrator->rollback()` a no-op, while leaving the
-        // rest of its teardown (the RefreshDatabaseState reset) intact.
+        // makes Testbench's `foreach (...) $migrator->rollback()` a no-op. (Testbench's
+        // RefreshDatabaseState reset is already excluded above — it only runs for the
+        // RefreshDatabase concern, which returned.)
         $this->cachedTestMigratorProcessors = [];
 
         parent::tearDownInteractsWithMigrations();
 
+        $this->dropAllTablesForReset();
+        $this->purgeConnections();
+    }
+
+    /**
+     * Drop every table on the default connection — the schema reset, run whether or not this
+     * suite loaded migrations. A suite with no migrations still creates tables (a fixture
+     * builds one by hand), and those must not survive into the next test.
+     */
+    private function dropAllTablesForReset(): void
+    {
         $config = $this->app?->make(Repository::class);
 
         if ($config === null) {
@@ -162,6 +202,33 @@ abstract class PackageTestCase extends Orchestra
         }
 
         Schema::connection((string) $config->get('database.default'))->dropAllTables();
+    }
+
+    /**
+     * Close every connection this test opened.
+     *
+     * Dropping tables resets the *schema*; it does nothing about the **PDO session**, and
+     * nothing else in the stack closes it either. Testbench's teardown never disconnects, and
+     * the app being flushed does not reliably collect the connection — so a real-engine suite
+     * left one backend open per test and climbed until the server refused new ones. Measured
+     * on a 20-test Postgres suite: 21 backends without this, flat at 2 with it, and identical
+     * with and without migrations — which is what proves the leak was never about migrations.
+     *
+     * Purging (rather than merely disconnecting) also drops the manager's cached instance, so
+     * the *next* test resolves a connection built from its own config rather than inheriting
+     * this test's.
+     */
+    private function purgeConnections(): void
+    {
+        $manager = $this->app?->make('db');
+
+        if (! $manager instanceof DatabaseManager) {
+            return;
+        }
+
+        foreach (array_keys($manager->getConnections()) as $name) {
+            $manager->purge((string) $name);
+        }
     }
 
     /**
