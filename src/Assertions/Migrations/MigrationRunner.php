@@ -10,6 +10,7 @@ use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use PHPUnit\Framework\Assert;
+use RoundlyConsulting\Testing\Database\DriverMatrix;
 use Throwable;
 
 /**
@@ -131,6 +132,11 @@ final class MigrationRunner
     public static function connectionIsAvailable(string $connection): bool
     {
         try {
+            // An isolated probe's namespace is created on demand, so "available" has to
+            // mean *usable*: on MySQL the probe database does not exist until this runs,
+            // and getPdo() alone would report a reachable engine as unavailable.
+            DriverMatrix::prepareProbe($connection);
+
             DB::connection($connection)->getPdo();
 
             return true;
@@ -151,6 +157,8 @@ final class MigrationRunner
 
         $config->set('database.default', $connection);
 
+        DriverMatrix::prepareProbe($connection);
+
         self::dropAllTables($connection);
 
         try {
@@ -168,15 +176,24 @@ final class MigrationRunner
     }
 
     /**
-     * The connection's user tables, sorted.
+     * The connection's user tables, sorted — scoped to the connection's **own** schema
+     * listing.
+     *
+     * `getTables()` with no argument spans every non-system schema on the engine, not the
+     * connection's `search_path`. On the leg where the suite runs on the same Postgres as
+     * the probe, that let the "created no tables" guard see the *suite's* tables and pass
+     * over a probe schema that in fact created nothing — the same probe/suite bleed as the
+     * drop, in the opposite direction. Scoping it to `getCurrentSchemaListing()` (the
+     * scope Laravel's own `dropAllTables()` uses) keeps the guard honest.
      *
      * @return list<string>
      */
     private static function tables(string $connection): array
     {
         $names = [];
+        $builder = Schema::connection($connection);
 
-        foreach (Schema::connection($connection)->getTables() as $table) {
+        foreach ($builder->getTables($builder->getCurrentSchemaListing()) as $table) {
             $name = (string) $table['name'];
 
             // SQLite's own bookkeeping table is not schema a migration created and survives

@@ -41,8 +41,21 @@ it('registers the real-engine connections so an R gate can skip visibly', functi
     // Present but (off a CI driver leg) unreachable is the whole point: a gate on a
     // connection that is not configured at all can never fire, so every R row in every
     // adopting package would skip silently forever.
-    expect(config('database.connections.pgsql'))->toBe(DriverMatrix::connectionConfig('pgsql'))
-        ->and(config('database.connections.mysql'))->toBe(DriverMatrix::connectionConfig('mysql'));
+    expect(config('database.connections.pgsql'))->toBe(DriverMatrix::probeConnectionConfig('pgsql'))
+        ->and(config('database.connections.mysql'))->toBe(DriverMatrix::probeConnectionConfig('mysql'));
+});
+
+it('registers the real-engine connections isolated from the suite connection', function (): void {
+    // The regression pin for the probe/suite collision. These were registered from
+    // connectionConfig(), so on the matching leg (TESTING_DB_DRIVER=pgsql) the `testing`
+    // and `pgsql` connections were byte-identical — one physical database, two PDO
+    // sessions — and MigrationRunner's drop-on-entry/drop-in-finally took the live
+    // suite's tables with it.
+    //
+    // Runs on EVERY leg and touches no engine: random execution order hid the original
+    // bug for weeks, so this pin must not depend on a seed or on a service being up.
+    expect(config('database.connections.pgsql.search_path'))->toBe(DriverMatrix::PROBE_NAMESPACE)
+        ->and(config('database.connections.mysql.database'))->toBe(DriverMatrix::PROBE_NAMESPACE);
 });
 
 it('routes the default connection through the driver matrix', function (): void {

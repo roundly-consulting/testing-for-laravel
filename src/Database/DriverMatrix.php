@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace RoundlyConsulting\Testing\Database;
 
+use Illuminate\Contracts\Config\Repository;
 use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Support\Facades\DB;
+use RoundlyConsulting\Testing\Assertions\Migrations\MigrationRunner;
 
 /**
  * The shared entry point for running a package's suite across database drivers.
@@ -42,14 +45,39 @@ final class DriverMatrix
     private const array REAL_ENGINE_DRIVERS = ['pgsql', 'mysql'];
 
     /**
+     * The namespace the real-engine **probe** connections are isolated into: a dedicated
+     * Postgres schema, and a dedicated MySQL database, both created on demand.
+     *
+     * This exists because the probe and the suite are the same engine at the same
+     * `TESTING_DB_*` location. On the matching leg (`TESTING_DB_DRIVER=pgsql`) the
+     * `testing` and `pgsql` connections were built from the same {@see self::connectionConfig()}
+     * and were therefore byte-identical: **one physical database reached through two PDO
+     * sessions**. {@see MigrationRunner}
+     * drops the target connection clean before and after every run, so a probe run dropped
+     * the *live suite's* tables mid-test. Random execution order made that a coin flip
+     * rather than a hard failure, which is why it survived for weeks.
+     *
+     * Isolating the probe into its own namespace makes the collision structurally
+     * impossible: Laravel scopes both `dropAllTables()` and `getTables()` to the
+     * connection's own schema listing (`search_path` on Postgres, the database name on
+     * MySQL), so a probe drop can only ever reach the probe's own schema.
+     */
+    public const string PROBE_NAMESPACE = 'testing_probe';
+
+    /**
      * Point the app's default `testing` connection at the matrix driver, and register the
-     * real-engine connections (`pgsql`, `mysql`) from the same source of truth.
+     * real-engine connections (`pgsql`, `mysql`) as **isolated probes** against the same
+     * `TESTING_DB_*` location.
      *
      * The named connections deliberately **overwrite** the framework's stock ones, which
      * read `DB_*` and point at Laravel's defaults (database `laravel`, user `root`). Those
      * can never reach a `TESTING_DB_*`-configured CI service, so a gate on them would skip
      * silently even with the engine up. Off a driver leg the named connections are present
      * but unreachable — which is exactly what makes that gate skip *visibly*.
+     *
+     * They are registered from {@see self::probeConnectionConfig()}, never
+     * {@see self::connectionConfig()}: on the matching leg the latter would hand the probe
+     * the *suite's own* database. See {@see self::PROBE_NAMESPACE}.
      */
     public static function configure(Application $app): void
     {
@@ -59,8 +87,145 @@ final class DriverMatrix
         $config->set('database.connections.testing', self::connectionConfig());
 
         foreach (self::REAL_ENGINE_DRIVERS as $driver) {
-            $config->set("database.connections.{$driver}", self::connectionConfig($driver));
+            $config->set("database.connections.{$driver}", self::probeConnectionConfig($driver));
         }
+    }
+
+    /**
+     * The connection config for a real-engine **probe**: the same engine at the same
+     * `TESTING_DB_*` location as {@see self::connectionConfig()}, but confined to
+     * {@see self::PROBE_NAMESPACE} so dropping it can never reach the suite's schema.
+     *
+     * The Postgres `search_path` is the probe schema **alone**, deliberately without a
+     * `,public` fallback: Laravel derives the drop scope from `search_path`, so adding
+     * `public` back would hand the probe the suite's tables again — reintroducing the very
+     * collision this method exists to prevent.
+     *
+     * @return array<string, mixed>
+     */
+    public static function probeConnectionConfig(string $driver): array
+    {
+        $config = self::connectionConfig($driver);
+
+        return match ($driver) {
+            'pgsql' => [...$config, 'search_path' => self::PROBE_NAMESPACE],
+            'mysql', 'mariadb' => [...$config, 'database' => self::PROBE_NAMESPACE],
+            default => $config,
+        };
+    }
+
+    /**
+     * Create the probe's namespace if it is not there yet, so a probe connection can be
+     * used from an empty engine. Idempotent, and a **no-op for anything that is not an
+     * isolated probe** — a connection the suite itself might be running on is never
+     * touched.
+     *
+     * Throws if the engine is unreachable; callers gate on that to skip *visibly*.
+     */
+    public static function prepareProbe(string $connection): void
+    {
+        $settings = app(Repository::class)->get("database.connections.{$connection}");
+
+        if (! is_array($settings) || ! self::isProbe($settings)) {
+            return;
+        }
+
+        $driver = $settings['driver'] ?? null;
+
+        if ($driver === 'pgsql') {
+            // Postgres accepts a `search_path` naming a schema that does not exist yet, so
+            // the probe connection can create its own schema. Unqualified DDL then lands
+            // there, and nowhere else.
+            DB::connection($connection)->statement(
+                'create schema if not exists "'.self::PROBE_NAMESPACE.'"',
+            );
+
+            return;
+        }
+
+        // MySQL has no schemas, and refuses to connect to a database that does not exist —
+        // so the probe database is created over the suite's own location first, then the
+        // probe connection is dropped so it reconnects to the new database.
+        self::createMysqlProbeDatabase((string) $driver, $connection);
+    }
+
+    private static function createMysqlProbeDatabase(string $driver, string $connection): void
+    {
+        $config = app(Repository::class);
+        $bootstrap = "{$connection}__probe_bootstrap";
+
+        $config->set("database.connections.{$bootstrap}", self::connectionConfig($driver));
+
+        try {
+            DB::connection($bootstrap)->statement(
+                'create database if not exists `'.self::PROBE_NAMESPACE.'`',
+            );
+        } finally {
+            DB::purge($bootstrap);
+            $config->set("database.connections.{$bootstrap}", null);
+            DB::purge($connection);
+        }
+    }
+
+    /**
+     * Whether a connection config is an isolated probe — i.e. confined to
+     * {@see self::PROBE_NAMESPACE}. Keyed on the namespace rather than the connection
+     * name so a suite that registers the probe under another name still gets the guard,
+     * and so the suite's own connection can never match.
+     *
+     * @param  array<string, mixed>  $settings
+     */
+    private static function isProbe(array $settings): bool
+    {
+        return match ($settings['driver'] ?? null) {
+            'pgsql' => ($settings['search_path'] ?? null) === self::PROBE_NAMESPACE,
+            'mysql', 'mariadb' => ($settings['database'] ?? null) === self::PROBE_NAMESPACE,
+            default => false,
+        };
+    }
+
+    /**
+     * One `TESTING_DB_*` value for a driver, or the driver's own default when the
+     * location cannot be describing that driver.
+     *
+     * `TESTING_DB_USER` is honoured as a legacy alias for `TESTING_DB_USERNAME`.
+     */
+    private static function location(string $driver, string $key, string $default): string
+    {
+        if (! self::locationDescribes($driver)) {
+            return $default;
+        }
+
+        $value = env("TESTING_DB_{$key}");
+
+        if ($value === null && $key === 'USERNAME') {
+            $value = env('TESTING_DB_USER');
+        }
+
+        return $value === null ? $default : (string) $value;
+    }
+
+    /**
+     * Whether the `TESTING_DB_*` location can be describing this driver's engine.
+     *
+     * The location describes **one** engine — the leg's — not every engine at once.
+     * Handing it to a *different* real engine is not merely useless, it is actively
+     * harmful: on the pgsql leg `TESTING_DB_PORT=5432` pointed the mysql driver straight
+     * at Postgres, where the TCP connect succeeds and the client then waits **60 seconds**
+     * for a MySQL handshake that will never come — per call, on a connection whose only
+     * job was to be unreachable. Falling back to the driver's own defaults keeps the
+     * off-leg connections "present but unreachable", which is the point, and makes them
+     * fail *fast*.
+     *
+     * A sqlite leg is the exception: sqlite has no location of its own, so a
+     * `TESTING_DB_*` set beside it can only be describing a real engine the suite means
+     * to reach — a postgres service running next to a sqlite leg.
+     */
+    private static function locationDescribes(string $driver): bool
+    {
+        $leg = self::driver();
+
+        return $leg === $driver || $leg === 'sqlite';
     }
 
     /**
@@ -86,11 +251,11 @@ final class DriverMatrix
         return match ($driver) {
             'pgsql' => [
                 'driver' => 'pgsql',
-                'host' => (string) env('TESTING_DB_HOST', '127.0.0.1'),
-                'port' => (string) env('TESTING_DB_PORT', '5432'),
-                'database' => (string) env('TESTING_DB_DATABASE', 'testing'),
-                'username' => (string) env('TESTING_DB_USERNAME', env('TESTING_DB_USER', 'testing')),
-                'password' => (string) env('TESTING_DB_PASSWORD', ''),
+                'host' => self::location($driver, 'HOST', '127.0.0.1'),
+                'port' => self::location($driver, 'PORT', '5432'),
+                'database' => self::location($driver, 'DATABASE', 'testing'),
+                'username' => self::location($driver, 'USERNAME', 'testing'),
+                'password' => self::location($driver, 'PASSWORD', ''),
                 'charset' => 'utf8',
                 'prefix' => '',
                 'search_path' => 'public',
@@ -98,11 +263,11 @@ final class DriverMatrix
             ],
             'mysql', 'mariadb' => [
                 'driver' => $driver,
-                'host' => (string) env('TESTING_DB_HOST', '127.0.0.1'),
-                'port' => (string) env('TESTING_DB_PORT', '3306'),
-                'database' => (string) env('TESTING_DB_DATABASE', 'testing'),
-                'username' => (string) env('TESTING_DB_USERNAME', env('TESTING_DB_USER', 'root')),
-                'password' => (string) env('TESTING_DB_PASSWORD', ''),
+                'host' => self::location($driver, 'HOST', '127.0.0.1'),
+                'port' => self::location($driver, 'PORT', '3306'),
+                'database' => self::location($driver, 'DATABASE', 'testing'),
+                'username' => self::location($driver, 'USERNAME', 'root'),
+                'password' => self::location($driver, 'PASSWORD', ''),
                 'charset' => 'utf8mb4',
                 'prefix' => '',
             ],

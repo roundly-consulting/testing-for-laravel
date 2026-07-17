@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\DB;
+use RoundlyConsulting\Testing\Assertions\Migrations\MigrationRunner;
 use RoundlyConsulting\Testing\Database\DriverMatrix;
 use RoundlyConsulting\Testing\Tests\Support\MinimalPackageTestCase;
 
@@ -65,9 +66,90 @@ it('registers the real-engine connections from a single source of truth', functi
     // Overwriting the framework's stock pgsql/mysql connections is the point: those read
     // DB_* and aim at database `laravel` / user `root`, which can never reach a
     // TESTING_DB_*-configured CI service — so a gate on them skips even with the engine up.
-    expect(config('database.connections.pgsql'))->toBe(DriverMatrix::connectionConfig('pgsql'))
-        ->and(config('database.connections.mysql'))->toBe(DriverMatrix::connectionConfig('mysql'));
+    expect(config('database.connections.pgsql'))->toBe(DriverMatrix::probeConnectionConfig('pgsql'))
+        ->and(config('database.connections.mysql'))->toBe(DriverMatrix::probeConnectionConfig('mysql'));
 });
+
+// ---------------------------------------------------------------------------
+// Probe isolation — the regression pins for the probe/suite collision. All of
+// these run on EVERY leg and need no engine: the original bug was masked by
+// random execution order, so its pin must never depend on a seed.
+// ---------------------------------------------------------------------------
+
+it('confines the real-engine probes to their own namespace', function (): void {
+    expect(DriverMatrix::probeConnectionConfig('pgsql'))->toMatchArray([
+        'driver' => 'pgsql',
+        'database' => 'testing',
+        'search_path' => DriverMatrix::PROBE_NAMESPACE,
+    ])
+        ->and(DriverMatrix::probeConnectionConfig('mysql'))->toMatchArray([
+            'driver' => 'mysql',
+            'database' => DriverMatrix::PROBE_NAMESPACE,
+        ]);
+});
+
+it('never hands a probe the same namespace as the suite it runs beside', function (): void {
+    // The exact byte-identity that caused the collision. On the pgsql leg
+    // connectionConfig() IS the suite's connection, so this asserts the probe and the
+    // suite can never be the same physical schema — the property the fix has to hold.
+    foreach (['pgsql', 'mysql'] as $driver) {
+        $suite = DriverMatrix::connectionConfig($driver);
+        $probe = DriverMatrix::probeConnectionConfig($driver);
+
+        expect($probe)->not->toBe($suite);
+
+        $suiteNamespace = $driver === 'pgsql' ? $suite['search_path'] : $suite['database'];
+        $probeNamespace = $driver === 'pgsql' ? $probe['search_path'] : $probe['database'];
+
+        expect($probeNamespace)->not->toBe($suiteNamespace);
+    }
+});
+
+it('leaves sqlite untouched — an in-memory database is already isolated', function (): void {
+    // Each :memory: connection is its own database, so there is nothing to confine, and
+    // inventing a namespace would break the sqlite_real fixture connection.
+    expect(DriverMatrix::probeConnectionConfig('sqlite'))->toBe(DriverMatrix::connectionConfig('sqlite'));
+});
+
+it('never points one engine at another engine location', function (): void {
+    // The TESTING_DB_* location describes the LEG's engine, not every engine. On the pgsql
+    // leg TESTING_DB_PORT=5432 was handed to the mysql driver, which connects to Postgres,
+    // then blocks 60 SECONDS waiting for a MySQL handshake — per call, on a connection
+    // whose only job is to be unreachable. An off-leg engine must fall back to its own
+    // default port so it fails fast instead.
+    $offLeg = array_values(array_filter(['pgsql', 'mysql'], fn (string $d): bool => $d !== DriverMatrix::driver()));
+
+    foreach ($offLeg as $driver) {
+        $port = DriverMatrix::connectionConfig($driver)['port'];
+
+        expect($port)->toBe($driver === 'pgsql' ? '5432' : '3306');
+    }
+})->skip(fn (): bool => DriverMatrix::driver() === 'sqlite', 'no leg engine to conflict with on sqlite');
+
+it('never prepares a connection that is not an isolated probe', function (): void {
+    DriverMatrix::configure(app());
+
+    // prepareProbe keys off the namespace, not the connection name, so the connection the
+    // suite is actually running on can never be mistaken for a probe and prepared (or,
+    // one step later, dropped). A no-op must also be silent — not an exception.
+    DriverMatrix::prepareProbe('testing');
+    DriverMatrix::prepareProbe('a-connection-that-is-not-configured');
+
+    expect(config('database.connections.testing'))->toBe(DriverMatrix::connectionConfig());
+});
+
+it('reports the mysql probe unavailable rather than throwing when no mysql leg is up', function (): void {
+    DriverMatrix::configure(app());
+
+    // The mysql probe database is created on demand over the suite's own location, because
+    // MySQL refuses to connect to a database that does not exist. With no mysql engine
+    // reachable that bootstrap must surface as an ordinary "unavailable" — the gate every
+    // R row skips on — never as an exception that takes the suite down with it.
+    expect(MigrationRunner::connectionIsAvailable('mysql'))->toBeFalse();
+
+    // The bootstrap connection is scratch: it must not be left behind in config.
+    expect(config('database.connections.mysql__probe_bootstrap'))->toBeNull();
+})->skip(fn (): bool => MigrationRunner::connectionIsAvailable('mysql'), 'a mysql engine is reachable on this leg');
 
 // ---------------------------------------------------------------------------
 // pgsql leg only — the matrix must be able to reach a real engine in CI. Skips
