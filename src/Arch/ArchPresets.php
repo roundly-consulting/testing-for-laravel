@@ -23,6 +23,12 @@ use PHPUnit\Architecture\Elements\ObjectDescription;
  * Every preset takes an `$ignoring` parameter, and entries passed that way are rot-checked
  * by {@see self::exemptionsExist()}: an entry that silences nothing fails.
  *
+ * A file may carry **as many exemption lists as it has presets**: each pin is registered
+ * under the description of the preset that owns it, so it is unique wherever that preset is.
+ * (It was not always so — a fixed pin description capped a file at one `$ignoring` list and
+ * made the second a hard `TestAlreadyExist`, with `noDebuggingLeftovers` unable to fall back
+ * to anything. See {@see self::exemptionsExist()}.)
+ *
  * The presets built on Pest's arch layer ({@see self::strictTypes()},
  * {@see self::finalByDefault()}, {@see self::noLocalCryptoPrimitives()}) return the
  * underlying arch expectation, so Pest's fluent `->ignoring(...)` also composes on them —
@@ -141,11 +147,29 @@ final class ArchPresets
      * nobody can see. Pass exemptions through the `$ignoring` parameter of the presets
      * below (or call this directly) to pin them.
      *
+     * ## `$for` names the rule, and is what makes two exemption lists per file possible
+     *
+     * Pest keys a test by description within a file, so a pin registered under a fixed
+     * description could exist **once per file** — a second preset carrying `$ignoring` was a
+     * hard `Pest\Exceptions\TestAlreadyExist`, and four packages legitimately carry two
+     * lists. `noDebuggingLeftovers` had no way out at all: it registers an `it()` case and
+     * has no fluent form to fall back to.
+     *
+     * `$for` is the rule the list is attached to, and the presets pass their **own case
+     * description** — so this pin is unique exactly when the preset that registered it is
+     * unique, and adds no collision surface of its own. It is required rather than
+     * defaulted: a default would just move the collision one call away, and the label is
+     * what a developer reads when the pin fires.
+     *
+     * A counter (`#1`, `#2`) was rejected — it is not stable across edits: inserting a
+     * preset renames every later case, breaking `--filter` and Pest's identity model.
+     *
      * @param  list<string>  $exemptions
+     * @param  string  $for  the rule the list exempts from, e.g. `no debugging leftovers`
      */
-    public static function exemptionsExist(array $exemptions): mixed
+    public static function exemptionsExist(array $exemptions, string $for): mixed
     {
-        return it('preset: arch exemptions all still silence something', function () use ($exemptions): void {
+        return it("preset: every arch exemption for {$for} still silences something", function () use ($exemptions): void {
             ArchExemptions::assert($exemptions);
         });
     }
@@ -157,11 +181,14 @@ final class ArchPresets
      */
     public static function strictTypes(string $namespace, array $ignoring = []): mixed
     {
+        $label = 'strict types in '.$namespace;
+
         return self::exempt(
-            arch('preset: strict types in '.$namespace)
+            arch('preset: '.$label)
                 ->expect($namespace)
                 ->toUseStrictTypes(),
             $ignoring,
+            $label,
         );
     }
 
@@ -192,7 +219,9 @@ final class ArchPresets
      */
     public static function finalByDefault(string $namespace, array $ignoring = []): mixed
     {
-        $expectation = arch('preset: classes are final by default in '.$namespace)
+        $label = 'classes are final by default in '.$namespace;
+
+        $expectation = arch('preset: '.$label)
             ->expect($namespace)
             ->classes()
             ->toBeFinal();
@@ -206,7 +235,7 @@ final class ArchPresets
             self::shadowedClassesAreFinal($namespace, $ignoring);
         }
 
-        return self::exempt($expectation, $ignoring);
+        return self::exempt($expectation, $ignoring, $label);
     }
 
     /**
@@ -231,7 +260,7 @@ final class ArchPresets
      */
     public static function shadowedClassesAreFinal(string $namespace, array $exemptions): mixed
     {
-        return it('preset: classes hidden by a prefix-matched exemption are still final', function () use ($namespace, $exemptions): void {
+        return it("preset: classes hidden by a prefix-matched exemption are still final in {$namespace}", function () use ($namespace, $exemptions): void {
             ArchShadows::assertShadowedClassesAreFinal($namespace, $exemptions);
         });
     }
@@ -263,12 +292,15 @@ final class ArchPresets
      */
     public static function noLocalCryptoPrimitives(string $namespace, array $ignoring = []): mixed
     {
+        $label = 'no local crypto primitives in '.$namespace;
+
         return self::exempt(
-            arch('preset: no local crypto primitives in '.$namespace)
+            arch('preset: '.$label)
                 ->expect($namespace)
                 ->not
                 ->toUse(self::CRYPTO_PRIMITIVES),
             $ignoring,
+            $label,
         );
     }
 
@@ -335,11 +367,13 @@ final class ArchPresets
     {
         $srcDir ??= getcwd().'/src';
 
+        $label = 'no debugging leftovers';
+
         if ($ignoring !== []) {
-            self::exemptionsExist($ignoring);
+            self::exemptionsExist($ignoring, $label);
         }
 
-        return it('preset: no debugging leftovers', function () use ($srcDir, $ignoring): void {
+        return it('preset: '.$label, function () use ($srcDir, $ignoring): void {
             DebugLeftovers::assert($srcDir, $ignoring);
         });
     }
@@ -355,15 +389,20 @@ final class ArchPresets
      * a parameter is the honest alternative: the list is a value we can check before
      * handing it on.
      *
+     * `$for` is the caller's own case description, so the pin it registers is unique
+     * wherever the preset itself is — see {@see self::exemptionsExist()} for why that
+     * property, rather than a counter, is what lets one file carry two exemption lists.
+     *
      * @param  list<string>  $ignoring
+     * @param  string  $for  the registering preset's own case description, minus `preset: `
      */
-    private static function exempt(mixed $expectation, array $ignoring): mixed
+    private static function exempt(mixed $expectation, array $ignoring, string $for): mixed
     {
         if ($ignoring === []) {
             return $expectation;
         }
 
-        self::exemptionsExist($ignoring);
+        self::exemptionsExist($ignoring, $for);
 
         return $expectation->ignoring($ignoring); // @phpstan-ignore-line
     }

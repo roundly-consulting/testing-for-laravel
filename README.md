@@ -405,6 +405,7 @@ ArchPresets::modelsResolveThroughSeam(string $srcDir, string $seamDir = 'Support
 ArchPresets::runtimeRequireIsWhitelisted(string $composerJson, array $alsoAllow = []);
 ArchPresets::noDebuggingLeftovers(array $ignoring = [], ?string $srcDir = null); // dd/dump/ray/var_dump/print_r
 ArchPresets::shadowedClassesAreFinal(string $namespace, array $exemptions); // only if you use ->ignoring()
+ArchPresets::exemptionsExist(array $exemptions, string $for); // the pin the presets register for you
 ```
 
 ### Exempt through the `$ignoring` **parameter**, not `->ignoring()`
@@ -416,6 +417,22 @@ a name that silences nothing — a typo, or an exemption that outlived the class
 ```php
 ArchPresets::finalByDefault('RoundlyConsulting\Shops\Actions', [SomeBase::class]);
 ArchPresets::noLocalCryptoPrimitives('RoundlyConsulting\Passkeys', ['RoundlyConsulting\Passkeys\Attestation']);
+```
+
+**As many lists per file as you have presets.** Each preset pins its own list under its own
+description, so two (or five) exemption lists coexist:
+
+```php
+ArchPresets::finalByDefault('RoundlyConsulting\Shops', [ShopException::class]);
+ArchPresets::noDebuggingLeftovers([Resource::class]); // a second list — fine
+```
+
+Calling `exemptionsExist()` directly (for a bespoke rule of your own) is the one place you
+name the rule yourself — `$for` is what a developer reads when the pin fires, and it is what
+keeps two pins in one file distinct:
+
+```php
+ArchPresets::exemptionsExist($ignoring, 'no facades outside the facade layer');
 ```
 
 The three presets built on Pest's arch layer (`strictTypes`, `finalByDefault`,
