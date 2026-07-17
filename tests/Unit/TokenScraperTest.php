@@ -17,7 +17,11 @@ function scrapeSource(string $source, array $extraReadPrefixes = [], array $sect
     try {
         $scraped = (new TokenScraper('shop', $extraReadPrefixes))->scrape($file, $sectionVariables);
 
-        return ['reads' => $scraped->reads, 'interpolations' => $scraped->interpolations];
+        return [
+            'reads' => $scraped->reads,
+            'interpolations' => $scraped->interpolations,
+            'dynamicSections' => $scraped->dynamicSections,
+        ];
     } finally {
         @unlink($file);
     }
@@ -62,6 +66,89 @@ it('does not flag a fully dynamic key with no prefix literal', function (): void
 
     expect($result['reads'])->toBe([])
         ->and($result['interpolations'])->toBe([]);
+});
+
+/**
+ * The driver-keyed shape — Laravel's own `database.connections.<name>`. The driver segment is
+ * a runtime value; the leaf after it is a literal, and that is what gets proven.
+ */
+it('scrapes a driver-keyed read into a pattern that pins the leaf', function (): void {
+    $result = scrapeSource('config("shop.providers.{$key}.url");');
+
+    expect($result['reads'])->toBe(['shop.providers.*.url'])
+        ->and($result['interpolations'])->toBe([]);
+});
+
+it('scrapes a driver hole filled by a method call', function (): void {
+    $result = scrapeSource('config("shop.providers.{$this->key()}.webhook_secret");');
+
+    expect($result['reads'])->toBe(['shop.providers.*.webhook_secret']);
+});
+
+it('scrapes a concatenated driver-keyed read', function (): void {
+    $result = scrapeSource("config('shop.providers.'.\$key.'.url');");
+
+    expect($result['reads'])->toBe(['shop.providers.*.url'])
+        ->and($result['interpolations'])->toBe([]);
+});
+
+/**
+ * A read that stops at the hole is a wholesale section read. It degrades to the literal
+ * parent — which the forward direction can still check — and is recorded as a dynamic
+ * section so a reverse failure underneath can explain itself. It proves no leaf.
+ */
+it('degrades a trailing driver hole to the literal parent', function (): void {
+    $result = scrapeSource('config("shop.providers.{$this->key()}", []);');
+
+    expect($result['reads'])->toBe(['shop.providers'])
+        ->and($result['interpolations'])->toBe([])
+        ->and($result['dynamicSections'])->toHaveCount(1);
+});
+
+/**
+ * A package that parks its config section on a property and indexes it is as ordinary as one
+ * that uses a local. `$this->config` is three tokens, and the mapping used to be matched
+ * against a lone `T_VARIABLE`, so it was never consulted: every leaf under it scraped as
+ * unread, which is the reverse check inventing a dead key.
+ */
+it('maps offsets on a section held in a property', function (): void {
+    $result = scrapeSource(
+        '$x = $this->config[\'public\'][\'enabled\'];',
+        sectionVariables: ['$this->config' => 'shop.media'],
+    );
+
+    expect($result['reads'])->toBe(['shop.media.public.enabled']);
+});
+
+/**
+ * Anchored on `$this`: another object's property is not this class's section, and attributing
+ * it here would invent a read — which blinds the reverse check on a key that really is dead.
+ */
+it('does not map offsets on another object property of the same name', function (): void {
+    $result = scrapeSource(
+        '$x = $other->config[\'public\'];',
+        sectionVariables: ['$this->config' => 'shop.media'],
+    );
+
+    expect($result['reads'])->toBe([]);
+});
+
+/**
+ * The guard rail: a hole that bleeds into its segment cannot be reasoned about segment-wise,
+ * and a derived pattern would be a guess. Guessing is how a check starts lying.
+ */
+it('refuses a hole that does not fill a whole segment', function (): void {
+    $result = scrapeSource('config("shop.providers.{$key}url");');
+
+    expect($result['reads'])->toBe([])
+        ->and($result['interpolations'])->toHaveCount(1);
+});
+
+it('refuses a key that is not built from literals and holes', function (): void {
+    $result = scrapeSource("config('shop.'.\$this->keyFor('x'));");
+
+    expect($result['reads'])->toBe([])
+        ->and($result['interpolations'])->toHaveCount(1);
 });
 
 it('counts a literal under an extra read prefix anywhere', function (): void {
@@ -216,8 +303,13 @@ it('does not count a repository set as a read', function (): void {
         PHP)['reads'])->toBe([]);
 });
 
-it('flags an interpolated key read through an injected repository', function (): void {
-    expect(scrapeSource(<<<'PHP'
+/**
+ * A driver-keyed read through an injected repository is checkable for the same reason a bare
+ * `config()` one is: the leaf (`rate`) is a literal in the source, and only the driver is a
+ * runtime value. It used to be flagged wholesale as an uncheckable interpolation.
+ */
+it('proves the leaf of a driver-keyed key read through an injected repository', function (): void {
+    $result = scrapeSource(<<<'PHP'
         use Illuminate\Contracts\Config\Repository;
 
         final class Manager
@@ -229,7 +321,10 @@ it('flags an interpolated key read through an injected repository', function ():
                 $this->config->get("shop.{$name}.rate");
             }
         }
-        PHP)['interpolations'])->not->toBe([]);
+        PHP);
+
+    expect($result['reads'])->toBe(['shop.*.rate'])
+        ->and($result['interpolations'])->toBe([]);
 });
 
 /**

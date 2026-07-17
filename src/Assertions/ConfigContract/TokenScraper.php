@@ -18,15 +18,29 @@ namespace RoundlyConsulting\Testing\Assertions\ConfigContract;
  *   - a literal string argument to `config('pkg.…')` / `Config::get('pkg.…')`;
  *   - a literal string argument to a read method on an **injected config repository** —
  *     `$this->config->get('pkg.…')`, `$config->string('pkg.…')` (see below);
- *   - a `$var['key']` array-offset read where `$var` is mapped to a base path via
- *     `sectionVariables` (a package that hands its whole config array to a DTO reads
- *     keys by offset, not through `config()`);
+ *   - a `$var['key']` or `$this->prop['key']` array-offset read where the receiver is mapped
+ *     to a base path via `sectionVariables` (a package that hands its whole config array to
+ *     a DTO reads keys by offset, not through `config()`);
  *   - any literal string under one of `extraReadPrefixes`, wherever it appears
  *     (e.g. `ModelResolver::for('pkg.model')` — not a `config()` call).
  *
- * A `config("pkg.{$x}")` interpolation or `config('pkg.'.$x)` concatenation under the
- * prefix is never silently treated as "reads nothing"; it is collected as an
- * interpolation so the contract can fail and demand a literal key or an allow-list.
+ * ## Driver-keyed reads
+ *
+ * `config("pkg.providers.{$key}.url")` — the shape of Laravel's own
+ * `database.connections.<name>` — names a literal *leaf* (`url`) under a runtime *driver*.
+ * The skeleton is right there in the tokens, so it is scraped into the pattern
+ * `pkg.providers.*.url`, which proves the leaf without ever claiming to know the driver.
+ * See {@see KeyPattern} for why that is a proof and not an assumption.
+ *
+ * Two shapes still resolve to no checkable pattern and are collected as interpolations, so
+ * the contract fails and demands a literal key rather than guessing:
+ *
+ *   - a hole that does not fill a whole segment — `config("pkg.drivers.{$name}x")`;
+ *   - a key not built from literals and holes at all — `config($this->keyFor('x'))`.
+ *
+ * A read that *stops* at the hole (`config("pkg.drivers.{$k}")`) is a wholesale section
+ * read, and degrades to the literal parent `pkg.drivers`: covered forward, proving no leaf
+ * in reverse — exactly how the literal `config('pkg.drivers')` has always been treated.
  *
  * ## Injected repositories
  *
@@ -47,6 +61,13 @@ namespace RoundlyConsulting\Testing\Assertions\ConfigContract;
  */
 final class TokenScraper
 {
+    /**
+     * The placeholder standing in for an interpolated value while a key skeleton is
+     * assembled. A NUL byte cannot occur in PHP source, so it can never collide with real
+     * key text — unlike `*`, which a config key could legitimately contain.
+     */
+    private const string HOLE = "\0";
+
     /**
      * The config repository types whose read methods count. Both the contract and the
      * concrete class — packages inject either.
@@ -87,6 +108,8 @@ final class TokenScraper
 
         $reads = [];
         $interpolations = [];
+        $dynamicSections = [];
+        $prefixedReads = [];
 
         $repositories = $this->configRepositoryNames($tokens);
 
@@ -97,7 +120,7 @@ final class TokenScraper
 
             if ($this->opensConfigCall($tokens, $i) || $this->opensRepositoryRead($tokens, $i, $repositories)) {
                 $argument = $this->captureFirstArgument($tokens, $i + 1);
-                $this->classifyArgument($argument, $reads, $interpolations);
+                $this->classifyArgument($argument, $reads, $interpolations, $dynamicSections);
 
                 continue;
             }
@@ -108,20 +131,30 @@ final class TokenScraper
                 foreach ($this->extraReadPrefixes as $extra) {
                     if (str_starts_with($value, $extra)) {
                         $reads[] = $value;
+                        $prefixedReads[] = $value;
                     }
                 }
             }
 
-            if ($id === T_VARIABLE && array_key_exists($text, $sectionVariables)) {
-                $offset = $this->offsetRead($tokens, $i);
+            if ($id === T_VARIABLE) {
+                [$name, $after] = $this->sectionReceiver($tokens, $i);
 
-                if ($offset !== null) {
-                    $reads[] = $sectionVariables[$text].'.'.$offset;
+                if ($name !== null && array_key_exists($name, $sectionVariables)) {
+                    $offset = $this->offsetRead($tokens, $after);
+
+                    if ($offset !== null) {
+                        $reads[] = $sectionVariables[$name].'.'.$offset;
+                    }
                 }
             }
         }
 
-        return new ScrapedFile(array_values(array_unique($reads)), array_values(array_unique($interpolations)));
+        return new ScrapedFile(
+            array_values(array_unique($reads)),
+            array_values(array_unique($interpolations)),
+            array_values(array_unique($dynamicSections)),
+            array_values(array_unique($prefixedReads)),
+        );
     }
 
     /**
@@ -385,13 +418,15 @@ final class TokenScraper
     }
 
     /**
-     * Sort a call argument into a literal read, an interpolation to flag, or noise.
+     * Sort a call argument into a read (literal or driver-keyed pattern), a wholesale
+     * dynamic-section read, an interpolation to flag, or noise.
      *
      * @param  list<array{0: int|null, 1: string}>  $argument
      * @param  list<string>  $reads
      * @param  list<string>  $interpolations
+     * @param  list<string>  $dynamicSections
      */
-    private function classifyArgument(array $argument, array &$reads, array &$interpolations): void
+    private function classifyArgument(array $argument, array &$reads, array &$interpolations, array &$dynamicSections): void
     {
         if (count($argument) === 1 && $argument[0][0] === T_CONSTANT_ENCAPSED_STRING) {
             $value = $this->stringValue($argument[0][1]);
@@ -403,26 +438,257 @@ final class TokenScraper
             return;
         }
 
-        $assembled = '';
-        $hasVariable = false;
+        $skeleton = $this->skeleton($argument);
+        $snippet = trim(implode('', array_column($argument, 1)));
 
-        foreach ($argument as [$id, $text]) {
-            if ($id === T_VARIABLE) {
-                $hasVariable = true;
-            } elseif ($id === T_CONSTANT_ENCAPSED_STRING) {
-                $assembled .= $this->stringValue($text);
-            } elseif ($id === T_ENCAPSED_AND_WHITESPACE) {
-                $assembled .= $text;
+        // Not built from literals and holes at all (`config($this->keyFor('x'))`) — report it
+        // only if some literal fragment claims this prefix, else it is another prefix's key.
+        if ($skeleton === null) {
+            if ($this->mentionsPrefix($argument)) {
+                $interpolations[] = $snippet;
             }
+
+            return;
         }
 
-        if ($hasVariable && str_starts_with($assembled, $this->prefix.'.')) {
-            $interpolations[] = trim(implode('', array_column($argument, 1)));
+        if (! str_starts_with(str_replace(self::HOLE, '*', $skeleton), $this->prefix.'.')) {
+            return;
         }
+
+        $pattern = $this->pattern($skeleton);
+
+        // A hole that does not fill a whole segment (`"pkg.drivers.{$name}x"`) cannot be
+        // reasoned about segment-wise, and guessing is how a check starts lying.
+        if ($pattern === null) {
+            $interpolations[] = $snippet;
+
+            return;
+        }
+
+        $stripped = $this->stripTrailingHoles($pattern);
+
+        // A read that stops *at* the hole is a wholesale section read — semantically the same
+        // as the literal `config('pkg.drivers')` this contract already tolerates, so it
+        // degrades to the literal parent: covered forward, proving no leaf in reverse.
+        //
+        // Except at the root. `config("pkg.{$name}")` strips down to the bare prefix, which
+        // claims nothing a forward check could test — every key in the file trivially matches
+        // it. Degrading that would trade a precise error for a vacuous read, so the most
+        // opaque shape of all stays unresolvable and keeps its pressure to name a literal.
+        if ($stripped === $this->prefix) {
+            $interpolations[] = $snippet;
+
+            return;
+        }
+
+        if ($stripped !== $pattern) {
+            $dynamicSections[] = $stripped.'|'.$snippet;
+        }
+
+        $reads[] = $stripped;
     }
 
     /**
-     * The dotted path the variable at $i is indexed by, following **every** consecutive
+     * True when a literal fragment of the argument names this contract's prefix — used only
+     * to decide whether an unresolvable expression is this contract's problem to report.
+     *
+     * @param  list<array{0: int|null, 1: string}>  $argument
+     */
+    private function mentionsPrefix(array $argument): bool
+    {
+        foreach ($argument as [$id, $text]) {
+            if (! in_array($id, [T_CONSTANT_ENCAPSED_STRING, T_ENCAPSED_AND_WHITESPACE], true)) {
+                continue;
+            }
+
+            $value = $id === T_CONSTANT_ENCAPSED_STRING ? $this->stringValue($text) : $text;
+
+            if (str_starts_with($value, $this->prefix.'.')) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Flatten a key expression into its literal text with a {@see self::HOLE} marker for each
+     * interpolated or concatenated value, or null when it is not built from string literals
+     * and holes alone.
+     *
+     * This is what makes a driver-keyed read checkable with no declaration from the test
+     * author: `config("git.providers.{$key}.url")` carries its own skeleton —
+     * `git.providers.<hole>.url` — right there in the token stream. The literal `url` after
+     * the hole is the part being proven, and it is proven by the source, not asserted by a
+     * test author who might be wrong.
+     *
+     * @param  list<array{0: int|null, 1: string}>  $argument
+     */
+    private function skeleton(array $argument): ?string
+    {
+        $skeleton = '';
+        $count = count($argument);
+
+        for ($i = 0; $i < $count; $i++) {
+            [$id, $text] = $argument[$i];
+
+            // A brace hole — `{$key}`, `{$this->key()}`. Skipped whole: what is inside is a
+            // runtime value, and no amount of reading it would name the driver.
+            if ($id === T_CURLY_OPEN || $id === T_DOLLAR_OPEN_CURLY_BRACES) {
+                $close = $this->skipBraces($argument, $i);
+
+                if ($close === null) {
+                    return null;
+                }
+
+                $i = $close;
+                $skeleton .= self::HOLE;
+
+                continue;
+            }
+
+            if ($id === T_VARIABLE) {
+                $skeleton .= self::HOLE;
+
+                continue;
+            }
+
+            if ($id === T_CONSTANT_ENCAPSED_STRING) {
+                $skeleton .= $this->stringValue($text);
+
+                continue;
+            }
+
+            if ($id === T_ENCAPSED_AND_WHITESPACE) {
+                $skeleton .= $text;
+
+                continue;
+            }
+
+            // The `"` delimiters of an interpolated string and the `.` concatenation operator
+            // between fragments carry no key text of their own.
+            if ($id === null && in_array($text, ['"', '.'], true)) {
+                continue;
+            }
+
+            return null;
+        }
+
+        return $skeleton;
+    }
+
+    /**
+     * The index of the `}` closing the brace hole opening at $i, or null if unbalanced.
+     *
+     * @param  list<array{0: int|null, 1: string}>  $argument
+     */
+    private function skipBraces(array $argument, int $i): ?int
+    {
+        $depth = 0;
+        $count = count($argument);
+
+        for ($j = $i; $j < $count; $j++) {
+            [$id, $text] = $argument[$j];
+
+            if ($id === T_CURLY_OPEN || $id === T_DOLLAR_OPEN_CURLY_BRACES || $text === '{') {
+                $depth++;
+            } elseif ($text === '}') {
+                $depth--;
+
+                if ($depth === 0) {
+                    return $j;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Turn a skeleton into a dotted pattern, or null when a hole does not occupy exactly one
+     * whole segment.
+     *
+     * Segment alignment is the guard rail. `"pkg.providers.{$key}.url"` gives a hole bounded
+     * by dots, so `*` cleanly stands for one driver name. `"pkg.providers.{$key}url"` does
+     * not: the hole bleeds into its segment, and any pattern derived from it would be a
+     * guess. That one goes back to the caller as an interpolation to fix by hand.
+     */
+    private function pattern(string $skeleton): ?string
+    {
+        $segments = explode('.', $skeleton);
+
+        foreach ($segments as $index => $segment) {
+            if (! str_contains($segment, self::HOLE)) {
+                continue;
+            }
+
+            if ($segment !== self::HOLE) {
+                return null;
+            }
+
+            $segments[$index] = '*';
+        }
+
+        return implode('.', $segments);
+    }
+
+    /**
+     * Drop trailing `*` segments, leaving the literal parent path.
+     *
+     * A pattern ending in a hole proves nothing per-leaf, so it must not masquerade as a
+     * per-leaf proof. Reducing it to the parent is exactly right: `config("pkg.drivers.{$k}")`
+     * reads the `pkg.drivers` subtree wholesale, and a wholesale read has always been
+     * forward-covered but reverse-worthless here.
+     */
+    private function stripTrailingHoles(string $pattern): string
+    {
+        $segments = explode('.', $pattern);
+
+        while ($segments !== [] && end($segments) === '*') {
+            array_pop($segments);
+        }
+
+        return implode('.', $segments);
+    }
+
+    /**
+     * The `sectionVariables` name the receiver starting at $i denotes, plus the index of its
+     * last token — so the caller knows where the `['offset']` chain begins.
+     *
+     * Two shapes, because a package that holds its config section on a property is as
+     * ordinary as one that holds it in a local:
+     *
+     *   - `$config['x']`         → one token,    name `$config`
+     *   - `$this->config['x']`   → three tokens, name `$this->config`
+     *
+     * The property form was invisible: the scrape matched a lone `T_VARIABLE` against the
+     * mapping, and `$this->config` is `$this` + `->` + `config`, so the mapping was never
+     * consulted and every leaf under it scraped as unread. That is the reverse check
+     * inventing a dead key — the same false report `allowUnread` would then have been used
+     * to silence, asserting a falsehood about live keys.
+     *
+     * Anchored on `$this`: an unrelated `$other->config['x']` is a different object's
+     * property and is not attributed to this class's mapping.
+     *
+     * @param  list<array{0: int|null, 1: string}>  $tokens
+     * @return array{0: string|null, 1: int}
+     */
+    private function sectionReceiver(array $tokens, int $i): array
+    {
+        $arrow = $tokens[$i + 1] ?? null;
+        $property = $tokens[$i + 2] ?? null;
+
+        if ($tokens[$i][1] === '$this'
+            && $arrow !== null && in_array($arrow[0], [T_OBJECT_OPERATOR, T_NULLSAFE_OBJECT_OPERATOR], true)
+            && $property !== null && $property[0] === T_STRING) {
+            return ['$this->'.$property[1], $i + 2];
+        }
+
+        return [$tokens[$i][1], $i];
+    }
+
+    /**
+     * The dotted path the receiver ending at $i is indexed by, following **every** consecutive
      * string-literal offset: `$var['a']` gives `a`, and `$var['a']['b']` gives `a.b`.
      *
      * Depth is the point. This used to read exactly one offset, so a package that took its
