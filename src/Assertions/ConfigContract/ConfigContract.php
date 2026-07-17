@@ -58,6 +58,8 @@ final class ConfigContract
         $readsAll = [];
         $readsForReverse = [];
         $interpolations = [];
+        $dynamicSections = [];
+        $origins = [];
 
         foreach (self::sourceFiles($srcDirs) as $file) {
             $basename = basename($file);
@@ -65,6 +67,11 @@ final class ConfigContract
 
             foreach ($scraped->reads as $key) {
                 $readsAll[] = $key;
+
+                $origins[$key] ??= [];
+                $origins[$key][] = in_array($key, $scraped->prefixedReads, true)
+                    ? "{$basename} (counted because it matches extraReadPrefixes)"
+                    : $basename;
 
                 if (! in_array($basename, $excludeFromReverse, true)) {
                     $readsForReverse[] = $key;
@@ -74,20 +81,39 @@ final class ConfigContract
             foreach ($scraped->interpolations as $snippet) {
                 $interpolations[] = "{$basename}: {$snippet}";
             }
+
+            foreach ($scraped->dynamicSections as $entry) {
+                [$path, $snippet] = explode('|', $entry, 2);
+                $dynamicSections[] = [$path, "{$basename}: {$snippet}"];
+            }
         }
 
         $readsAll = array_values(array_unique($readsAll));
         $readsForReverse = array_values(array_unique($readsForReverse));
 
+        // The one check that must still abort. An unresolvable key means the read-set is
+        // *incomplete*, so the forward and reverse findings computed from it would be
+        // fiction — reverse in particular would invent dead keys. The two directions below
+        // share one sound read-set, which is exactly why both of them can be reported.
         self::assertNoInterpolations($interpolations, $prefix);
-        self::assertForward($readsAll, $shipped, $allowUnshipped, $prefix);
+
+        $report = self::forwardProblems($readsAll, $shipped, $allowUnshipped, $prefix, $origins);
 
         if ($reverse) {
-            self::assertReverse($shipped, $readsForReverse, $allowUnread, $prefix);
-            self::assertAllowUnreadIsLive($allowUnread, $shipped, $readsForReverse);
+            $report = array_merge(
+                $report,
+                self::reverseProblems($shipped, $readsForReverse, $allowUnread, $prefix, $dynamicSections),
+                self::staleAllowUnread($allowUnread, $shipped, $readsForReverse),
+            );
         }
 
-        self::assertAllowUnshippedIsLive($allowUnshipped, $readsAll, $shipped);
+        $report = array_merge($report, self::staleAllowUnshipped($allowUnshipped, $readsAll, $shipped));
+
+        Assert::assertSame(
+            [],
+            $report,
+            $report === [] ? '' : "The '{$prefix}.' config contract failed:\n\n".implode("\n\n", $report)."\n",
+        );
     }
 
     /**
@@ -117,11 +143,23 @@ final class ConfigContract
     }
 
     /**
+     * The forward direction: every key the code reads must be shipped.
+     *
+     * Each finding names *where* the read came from. That is not decoration. On
+     * `kubernetes-api`, `kubernetes.` is the Kubernetes API's own namespace, so an
+     * `extraReadPrefixes` entry of `kubernetes.` silently promoted a literal
+     * `kubernetes.io/tls` — an annotation key, not a config key — into a config read, and
+     * the forward direction failed on a key no one had ever meant to read. The finding said
+     * only that the key was unshipped, and diagnosing it took hours. Naming the file and the
+     * reason turns that into seconds.
+     *
      * @param  list<string>  $readsAll
      * @param  list<string>  $shipped
      * @param  list<string>  $allowUnshipped
+     * @param  array<string, list<string>>  $origins
+     * @return list<string>
      */
-    private static function assertForward(array $readsAll, array $shipped, array $allowUnshipped, string $prefix): void
+    private static function forwardProblems(array $readsAll, array $shipped, array $allowUnshipped, string $prefix, array $origins): array
     {
         $missing = [];
 
@@ -131,22 +169,35 @@ final class ConfigContract
             }
         }
 
+        if ($missing === []) {
+            return [];
+        }
+
         sort($missing);
 
-        Assert::assertSame(
-            [],
+        $lines = array_map(
+            static fn (string $key): string => "  - {$key}  [read in ".implode(', ', array_unique($origins[$key] ?? ['?'])).']',
             $missing,
-            "The code reads config keys under '{$prefix}.' that the config file does not ship: "
-            .implode(', ', $missing).'. Ship them, fix the read, or add them to allowUnshipped.',
         );
+
+        return [
+            "FORWARD — the code reads '{$prefix}.' keys that the config file does not ship:\n"
+            .implode("\n", $lines)
+            ."\nShip them, fix the read, or add them to allowUnshipped. If a key above is not a config key at all, "
+            .'an extraReadPrefixes entry is too broad — name the keys exactly instead of blanket-prefixing.',
+        ];
     }
 
     /**
+     * The reverse direction: every shipped leaf must be read.
+     *
      * @param  list<string>  $shipped
      * @param  list<string>  $readsForReverse
      * @param  list<string>  $allowUnread
+     * @param  list<array{0: string, 1: string}>  $dynamicSections
+     * @return list<string>
      */
-    private static function assertReverse(array $shipped, array $readsForReverse, array $allowUnread, string $prefix): void
+    private static function reverseProblems(array $shipped, array $readsForReverse, array $allowUnread, string $prefix, array $dynamicSections): array
     {
         $unread = [];
 
@@ -156,14 +207,52 @@ final class ConfigContract
             }
         }
 
+        if ($unread === []) {
+            return [];
+        }
+
         sort($unread);
 
-        Assert::assertSame(
-            [],
-            $unread,
-            "The config file ships '{$prefix}.' keys that nothing reads: "
-            .implode(', ', $unread).'. Remove them, wire them up, or add them to allowUnread.',
-        );
+        $problem = "REVERSE — the config file ships '{$prefix}.' keys that nothing reads:\n  - "
+            .implode("\n  - ", $unread)
+            ."\nRemove them, wire them up, or add them to allowUnread.";
+
+        $hints = self::wholesaleHints($unread, $dynamicSections);
+
+        if ($hints !== []) {
+            $problem .= "\n\nSome of these sit under a section read wholesale through a dynamic key:\n  - "
+                .implode("\n  - ", $hints)
+                ."\nA wholesale read proves no individual leaf, by design. Assign the section to a local and "
+                .'index it with literal offsets, then map that local through sectionVariables — its base path '
+                .'may carry a `*` for the dynamic segment.';
+        }
+
+        return [$problem];
+    }
+
+    /**
+     * The dynamic wholesale reads that sit above at least one unread leaf — the likely cause
+     * of that leaf looking dead, surfaced so the reader does not have to guess.
+     *
+     * @param  list<string>  $unread
+     * @param  list<array{0: string, 1: string}>  $dynamicSections
+     * @return list<string>
+     */
+    private static function wholesaleHints(array $unread, array $dynamicSections): array
+    {
+        $hints = [];
+
+        foreach ($dynamicSections as [$path, $snippet]) {
+            foreach ($unread as $leaf) {
+                if (KeyPattern::sharesPath($path, $leaf) && substr_count($path, '.') < substr_count($leaf, '.')) {
+                    $hints[] = $snippet;
+
+                    break;
+                }
+            }
+        }
+
+        return array_values(array_unique($hints));
     }
 
     /**
@@ -173,15 +262,19 @@ final class ConfigContract
      * @param  list<string>  $allowUnread
      * @param  list<string>  $shipped
      * @param  list<string>  $readsForReverse
+     * @return list<string>
      */
-    private static function assertAllowUnreadIsLive(array $allowUnread, array $shipped, array $readsForReverse): void
+    private static function staleAllowUnread(array $allowUnread, array $shipped, array $readsForReverse): array
     {
+        $stale = [];
+
         foreach ($allowUnread as $entry) {
-            Assert::assertTrue(
-                in_array($entry, $shipped, true) && ! self::coveredReverse($entry, $readsForReverse),
-                "Stale allowUnread entry '{$entry}': it is not a shipped-but-unread key. Remove it.",
-            );
+            if (! in_array($entry, $shipped, true) || self::coveredReverse($entry, $readsForReverse)) {
+                $stale[] = "Stale allowUnread entry '{$entry}': it is not a shipped-but-unread key. Remove it.";
+            }
         }
+
+        return $stale;
     }
 
     /**
@@ -190,28 +283,33 @@ final class ConfigContract
      * @param  list<string>  $allowUnshipped
      * @param  list<string>  $readsAll
      * @param  list<string>  $shipped
+     * @return list<string>
      */
-    private static function assertAllowUnshippedIsLive(array $allowUnshipped, array $readsAll, array $shipped): void
+    private static function staleAllowUnshipped(array $allowUnshipped, array $readsAll, array $shipped): array
     {
+        $stale = [];
+
         foreach ($allowUnshipped as $entry) {
-            Assert::assertTrue(
-                in_array($entry, $readsAll, true) && ! self::coveredForward($entry, $shipped),
-                "Stale allowUnshipped entry '{$entry}': it is not a read-but-unshipped key. Remove it.",
-            );
+            if (! in_array($entry, $readsAll, true) || self::coveredForward($entry, $shipped)) {
+                $stale[] = "Stale allowUnshipped entry '{$entry}': it is not a read-but-unshipped key. Remove it.";
+            }
         }
+
+        return $stale;
     }
 
     /**
-     * A read is shipped if it names a leaf, a parent of a leaf, or a path into a leaf.
+     * A read is shipped if it names a leaf, a parent of a leaf, or a path into a leaf. A
+     * driver hole in the read matches any one segment — so `pkg.providers.*.url` is shipped
+     * when some `pkg.providers.<driver>.url` is, and a typo'd `pkg.providers.*.urls` is not.
+     * That is what checks a `sectionVariables` base path rather than trusting it.
      *
      * @param  list<string>  $shipped
      */
     private static function coveredForward(string $read, array $shipped): bool
     {
         foreach ($shipped as $leaf) {
-            if ($leaf === $read
-                || str_starts_with($leaf, $read.'.')
-                || str_starts_with($read, $leaf.'.')) {
+            if (KeyPattern::sharesPath($read, $leaf)) {
                 return true;
             }
         }
@@ -228,7 +326,7 @@ final class ConfigContract
     private static function coveredReverse(string $leaf, array $reads): bool
     {
         foreach ($reads as $read) {
-            if ($read === $leaf || str_starts_with($read, $leaf.'.')) {
+            if (KeyPattern::readsLeaf($read, $leaf)) {
                 return true;
             }
         }
