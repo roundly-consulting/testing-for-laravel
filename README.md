@@ -245,10 +245,17 @@ empty list throws at call time, because a negative-only check can pass against e
 ## The model-swap proof
 
 ```php
-expect($configKey)->toHonourModelSwap(string $subclass, Closure $exercise);
+expect($configKey)->toHonourModelSwap(string $subclass, Closure $exercise, bool $expectsCreation = true);
 ```
 
+The host subclass **must** use the shipped `CountsCreations` trait:
+
 ```php
+class CustomMedia extends Media
+{
+    use CountsCreations;
+}
+
 // config('media.media_model') swapped to CustomMedia::class before boot
 expect('media.media_model')->toHonourModelSwap(CustomMedia::class, function () use ($user, $path) {
     $media = $user->addMediaFromPath($path, 'avatar'); // the real flow, not a resolver string check
@@ -262,9 +269,23 @@ FKs derived from the parent class name, bare `belongsToMany()` deriving the pivo
 beside an honoured config (shops #3, media #28), and `final` on the invited subclass (7×).
 It fails fast if `config($configKey) !== $subclass` (you forgot the before-boot swap), then
 asserts every returned model's **concrete class** is `$subclass` — `instanceof` is not
-enough, because a row created as the packaged class never fires the host's model events.
-When the subclass uses the shipped `CountsCreations` trait it also asserts a `created`
-event landed on it — the only proof the row was really created *as* the host class (#31).
+enough, because a row created as the packaged class never fires the host's model events —
+and finally that a `created` event landed on `$subclass` itself, the only proof the row was
+really created *as* the host class (#31).
+
+`CountsCreations` is **required**, not detected. It used to be opt-in, and omitting it
+dropped the created-event half in silence — 15 assertions quietly became 13, so a caller who
+had never thought about the trait got a weaker proof under the same name (`alerts`'
+seam-bypass proof stayed green until the trait was added). A missing trait now fails with
+instructions. For a flow that genuinely creates no row, say so explicitly:
+
+```php
+expect('media.media_model')->toHonourModelSwap(
+    CustomMedia::class,
+    fn () => $user->firstMedia('avatar'),   // reads an existing row, creates nothing
+    expectsCreation: false,
+);
+```
 
 ## Architecture presets
 

@@ -30,10 +30,24 @@ use RoundlyConsulting\Testing\Fixtures\Concerns\CountsCreations;
  *     ->create(...)` from inside the packaged model creates the row as the *packaged*
  *     class, so the host's model events never fire — yet the object still passes
  *     `instanceof Subclass`. This asserts the **concrete class** (`$model::class`) of
- *     every returned model equals `$subclass`, and — when the subclass uses the shipped
- *     {@see CountsCreations} trait — that at least one `created` event actually landed
- *     on it. "Counting events is the only way to prove the row was really created as the
- *     host's class."
+ *     every returned model equals `$subclass`, and that at least one `created` event
+ *     actually landed on it via the shipped {@see CountsCreations} trait. "Counting events
+ *     is the only way to prove the row was really created as the host's class."
+ *
+ * ## Why CountsCreations is required rather than detected
+ *
+ * The creation count used to be opt-in: present the trait and get 15 assertions, omit it and
+ * get 13 — **with no warning**. So the assertion's strongest half, the only one that catches
+ * a re-hydration false-green, quietly disappeared exactly when a caller had not thought about
+ * it, and the caller could not tell the difference between a proof and a weaker proof wearing
+ * the same name. `alerts`' seam-bypass proof stayed green until the trait was added: the
+ * downgrade was not theoretical.
+ *
+ * A missing trait is now a failure with instructions. Every package in the fleet that uses
+ * this assertion already applies the trait, so requiring it costs nothing and closes the hole.
+ * A flow that genuinely creates no row (one that only reads existing ones) says so explicitly
+ * with `expectsCreation: false` — a deliberate, reviewable decision at the call site rather
+ * than an invisible downgrade.
  */
 final class ModelSwap
 {
@@ -41,8 +55,9 @@ final class ModelSwap
      * @param  string  $configKey  e.g. 'media.media_model'
      * @param  class-string  $subclass  the host subclass, set into config BEFORE boot by the caller
      * @param  Closure  $exercise  drives the real flow and returns the Model|iterable<Model> it produced
+     * @param  bool  $expectsCreation  whether the flow creates a row — requires {@see CountsCreations}
      */
-    public static function assert(string $configKey, string $subclass, Closure $exercise): void
+    public static function assert(string $configKey, string $subclass, Closure $exercise, bool $expectsCreation = true): void
     {
         $configured = config($configKey);
 
@@ -56,7 +71,16 @@ final class ModelSwap
 
         $countsCreations = in_array(CountsCreations::class, class_uses_recursive($subclass), true);
 
-        if ($countsCreations) {
+        if ($expectsCreation) {
+            Assert::assertTrue(
+                $countsCreations,
+                "{$subclass} must use the ".CountsCreations::class.' trait. Without it this assertion silently '
+                .'drops its strongest half: asserting the concrete class of a returned object cannot tell a row '
+                .'that was really created as '.class_basename($subclass).' from one created as the packaged class '
+                .'and re-hydrated — counting created-events is the only thing that can. Add the trait to the host '
+                .'subclass fixture, or pass expectsCreation: false if the flow genuinely creates no row.',
+            );
+
             self::invokeStatic($subclass, 'resetCreationCount');
         }
 
@@ -91,7 +115,7 @@ final class ModelSwap
             .'Model (or iterable of Models) the flow actually produced.',
         );
 
-        if ($countsCreations) {
+        if ($expectsCreation) {
             Assert::assertGreaterThanOrEqual(
                 1,
                 (int) self::invokeStatic($subclass, 'creationCount'),

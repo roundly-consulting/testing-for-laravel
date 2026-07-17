@@ -85,8 +85,8 @@ final class Expectations
             return $this;
         });
 
-        expect()->extend('toHonourModelSwap', function (string $subclass, Closure $exercise): mixed {
-            ModelSwap::assert((string) $this->value, $subclass, $exercise);
+        expect()->extend('toHonourModelSwap', function (string $subclass, Closure $exercise, bool $expectsCreation = true): mixed {
+            ModelSwap::assert((string) $this->value, $subclass, $exercise, $expectsCreation);
 
             return $this;
         });

@@ -136,9 +136,10 @@ final class Assert
      *
      * @param  class-string  $subclass
      * @param  Closure(): (Model|iterable<Model>)  $exercise
+     * @param  bool  $expectsCreation  whether the flow creates a row — requires CountsCreations
      */
-    public static function modelSwapHonoured(string $configKey, string $subclass, Closure $exercise): void
+    public static function modelSwapHonoured(string $configKey, string $subclass, Closure $exercise, bool $expectsCreation = true): void
     {
-        ModelSwap::assert($configKey, $subclass, $exercise);
+        ModelSwap::assert($configKey, $subclass, $exercise, $expectsCreation);
     }
 }
