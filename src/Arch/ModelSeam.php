@@ -396,14 +396,45 @@ final class ModelSeam
     }
 
     /**
+     * Whether the file resolves a model through late static binding **in a static context** —
+     * the only context where the resolution can miss a host's swap.
+     *
+     * The static gate is as load-bearing as the is-a-model gate above, and for the same
+     * reason: without it the ban matches a token shape rather than the semantics.
+     *
+     * `self::` and `static::` are *forwarding* calls — PHP carries the called class through
+     * them. So inside an **instance** method the called class is `$this`'s runtime class,
+     * which is already whatever the host configured and instantiated; `self::query()` there
+     * builds for the swapped subclass, and `new static` instantiates it. Verified rather than
+     * argued: `(new Sub)->viaSelf()` returns `Sub`. Flagging that shape does not just nag —
+     * "fixing" it by routing through the seam would introduce a real bug, pruning a host's
+     * un-configured subclass as the packaged base class. `refresh-tokens` (`prunable()`),
+     * `jwt` and `connections` all carry it.
+     *
+     * In a **static** context there is no `$this` to pin the called class: it is whatever the
+     * caller named, so `PackageModel::helper()` inside the package resolves to the packaged
+     * class and the host's config is ignored — the permissions #34 bug. That entry point is
+     * not knowable from this file, so a static context stays banned.
+     *
+     * The check errs toward the false negative: any enclosing static function taints the
+     * whole nesting (a closure inside a static method has no `$this` either), and only a
+     * plainly instance-scoped occurrence is cleared.
+     *
      * @param  list<array{0: int|null, 1: string}>  $tokens
      */
     private static function usesLateStaticResolution(array $tokens): bool
     {
         $count = count($tokens);
+        $context = new LateBindingContext;
 
         for ($i = 0; $i < $count; $i++) {
             [$id, $text] = $tokens[$i];
+
+            $context->observe($tokens, $i);
+
+            if (! $context->inStaticContext()) {
+                continue;
+            }
 
             // `new static`
             if ($id === T_NEW) {

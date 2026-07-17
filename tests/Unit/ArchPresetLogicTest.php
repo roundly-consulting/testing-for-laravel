@@ -71,6 +71,18 @@ it('rejects a new static instantiation that bypasses the configured seam', funct
         ->toThrow(AssertionFailedError::class);
 });
 
+it('accepts a model calling self::query() from an instance method', function () use ($archFixture): void {
+    // Reported on refresh-tokens, jwt and connections. `self::` is a FORWARDING call: inside
+    // an instance method late static binding survives it, so `self::query()` already builds
+    // for `$this`'s runtime class — the configured one. Verified empirically rather than
+    // assumed: `(new Sub)->viaSelf()` returns `Sub`, not `Base`.
+    //
+    // This is the second distinct false positive in this ban, both from matching a token
+    // shape instead of the semantics. The rule is: flag late static resolution only where the
+    // called class is NOT already pinned by a `$this` — i.e. in a static context.
+    ModelSeam::assert($archFixture('seam/instance-self-query'));
+});
+
 it('accepts a non-model class using new static as a named constructor', function () use ($archFixture): void {
     // Reported on `options`, whose BaseOption::for()/make() are built on `new static` —
     // BaseOption is the abstract class hosts extend to define a setting, not a model, and
@@ -239,4 +251,44 @@ it('rejects an empty exemption entry', function (): void {
 it('names every stale exemption, not just the first', function (): void {
     expect(fn () => ArchExemptions::assert(['App\Nope\One', ArchPresets::class, 'App\Nope\Two']))
         ->toThrow(AssertionFailedError::class, 'App\Nope\One, App\Nope\Two');
+});
+
+it('still rejects a seam bypass inside a closure in a static method', function () use ($archFixture): void {
+    // Guard the guard for the instance-method fix: a closure declared in a static method has
+    // no $this either, so gating on "is the innermost function static" would let the bypass
+    // back in silently. Nesting taints outward.
+    expect(fn () => ModelSeam::assert($archFixture('seam/static-closure-query')))
+        ->toThrow(AssertionFailedError::class);
+});
+
+// ---------------------------------------------------------------------------
+// The $ignoring parameter is checked; Pest's fluent ->ignoring() is not.
+//
+// Not a defect this package can fix, so it is pinned as the documented gap it is.
+// `->ignoring()` is Pest's own method on an @internal object whose __destruct() evaluates
+// the expectation — wrapping it to intercept the call would put this package between Pest
+// and that destructor, and an arch case that silently stops running is the very failure the
+// whole package exists to end. So the README and docblocks teach the parameter instead, and
+// these two cases keep that teaching honest: if Pest ever starts checking the fluent form,
+// the second one fails and the docs get revisited.
+// ---------------------------------------------------------------------------
+
+it('rot-checks an exemption passed through the $ignoring parameter', function (): void {
+    expect(fn () => ArchExemptions::assert(['RoundlyConsulting\Bogus\DoesNotExist']))
+        ->toThrow(AssertionFailedError::class, 'silence nothing');
+});
+
+it('accepts a namespace exemption, which is why liveness is not a bare class_exists', function (): void {
+    // `->ignoring()` legitimately takes namespaces, so the rot-check has to as well —
+    // rejecting one for being a namespace would be its own false positive.
+    ArchExemptions::assert(['RoundlyConsulting\Testing\Arch']);
+
+    expect(true)->toBeTrue();
+});
+
+it('still rejects a seam bypass in a class that declares an abstract method', function () use ($archFixture): void {
+    // A bodyless declaration must not corrupt static-context tracking: if it did, the static
+    // helper below it would read as instance-scoped and the ban would go quietly green.
+    expect(fn () => ModelSeam::assert($archFixture('seam/abstract-method')))
+        ->toThrow(AssertionFailedError::class);
 });
