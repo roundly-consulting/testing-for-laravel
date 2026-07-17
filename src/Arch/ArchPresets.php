@@ -40,12 +40,49 @@ final class ArchPresets
      * / base64 families are enumerated rather than globbed. Public so a consumer can
      * reuse the exact list in a custom arch case.
      *
+     * ## `hash_equals` is deliberately NOT here (removed 2026-07-17)
+     *
+     * It was, and two packages exempted it independently for the same reason —
+     * `cosmos-foundation` (secret compare in the docs gate) and `media-library`
+     * (`Media::verifyChecksum()`). Both were right, and the ban was wrong. Four reasons,
+     * the last being the one that settles it:
+     *
+     *  1. **It is not a re-implementation.** This ban targets crypto *re-implemented*
+     *     locally. `hash_equals()` **is** the primitive — PHP's canonical constant-time
+     *     compare. Calling it is the correct thing; the ban fired on compliance.
+     *  2. **There is no policy to centralize.** Every other entry carries a decision worth
+     *     owning in one place — an algorithm, a key, a padding, an encoding.
+     *     `hash_equals(string, string): bool` has no algorithm, no key, and no upgrade
+     *     path. A `ConstantTime::equals()` wrapper can only ever be a pass-through, so the
+     *     ban bought indirection and no audit point.
+     *  3. **Its incentive gradient points at the vulnerability, uniquely on this list.**
+     *     The cheapest way to get green without taking a runtime dep is `$a === $b` — a
+     *     timing leak that reads in review as a harmless simplification. No other entry has
+     *     an innocuous-looking escape: nobody quietly reduces `openssl_sign()` to an
+     *     operator. media-library's note records it exempting "rather than silently
+     *     rewritten" — the right outcome depended on an author resisting the test.
+     *  4. **The ban cost more coverage than it bought.** `->ignoring()` is scoped to a
+     *     *class*, not a function. Exempting `Media::class` for one correct `hash_equals`
+     *     call blinds that entire class to the other nineteen primitives. The ban was
+     *     buying a wrapper by trading away real coverage at exactly the security-sensitive
+     *     call sites — and, for a package that doesn't already `require` crypto, the only
+     *     alternative was a runtime dependency (`cosmos-foundation` ships in every cosmos
+     *     service) taken on to avoid calling a builtin correctly.
+     *
+     * A package that DOES `require` crypto-for-laravel and wants `ConstantTime::equals()`
+     * enforced should ban `hash_equals` in a bespoke rule — that is a "we own crypto, route
+     * through it" policy, not a "don't re-implement crypto" one. Six packages already do
+     * exactly that (`certificates`, `git`, `passkeys`, `purchases`, `refresh-tokens`,
+     * `two-factor`), and none of them read this list.
+     *
+     * `hash` and `hash_hmac` stay: both take an algorithm, and that choice is the decision
+     * crypto-for-laravel exists to own.
+     *
      * @var list<string>
      */
     public const CRYPTO_PRIMITIVES = [
         'hash',
         'hash_hmac',
-        'hash_equals',
         'hash_pbkdf2',
         'openssl_encrypt',
         'openssl_decrypt',
@@ -141,8 +178,12 @@ final class ArchPresets
     /**
      * No crypto primitive is re-implemented locally — primitives live in
      * `crypto-for-laravel`. Exempt an attestation/trust corner with `->ignoring(...)`.
-     */
-    /**
+     *
+     * Note that `->ignoring()` is scoped to a **class**, not a function: exempting a class
+     * to permit one primitive blinds it to all of {@see self::CRYPTO_PRIMITIVES}. Scope the
+     * exemption to the smallest class that really needs it — and see that constant's
+     * docblock for why `hash_equals` is not on the list.
+     *
      * @param  list<string>  $ignoring  exemptions — pinned by {@see self::exemptionsExist()}
      */
     public static function noLocalCryptoPrimitives(string $namespace, array $ignoring = []): mixed

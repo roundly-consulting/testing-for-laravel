@@ -324,6 +324,10 @@ ArchPresets::finalByDefault('RoundlyConsulting\Shops\Actions')->ignoring(SomeBas
 ArchPresets::noLocalCryptoPrimitives('RoundlyConsulting\Passkeys')->ignoring('RoundlyConsulting\Passkeys\Attestation');
 ```
 
+Note that Pest's `->ignoring()` is scoped to a **class**, not a function: exempting a class
+to permit one call relaxes the *whole* ban for that class. Scope it to the smallest class
+that genuinely needs it.
+
 **`modelsResolveThroughSeam`: declare `$modelKeys` unless every swap key you own is named
 `model`, `models`, or `*_model`.** Undeclared, its stray-literal half infers swap keys from
 key *shape*, so it polices only the keys named that way. That inference is complete for most
@@ -365,7 +369,7 @@ the exact one the preset couldn't catch. Tokens don't care whether the function 
 | `strictTypes` | files drifting off `declare(strict_types=1)`, so a silent type coercion slips in |
 | `finalByDefault` | accidental extension points; classes meant to be closed left open |
 | `swappableModelsAreNotFinal` | `final` on a config-swappable model — a PHP fatal the moment a host swaps it, shipped **7×** (shops #19, teams #21, advertisements #23, alerts #25, reports #33, posts #35, passkeys #37) |
-| `noLocalCryptoPrimitives` | crypto primitives (`hash`, `openssl_*`, `sodium_*`, `random_bytes`, `base64_*`) re-implemented locally instead of in `crypto-for-laravel` (passkeys ban list) |
+| `noLocalCryptoPrimitives` | crypto primitives (`hash`, `hash_hmac`, `openssl_*`, `sodium_*`, `random_bytes`, `base64_*`) re-implemented locally instead of in `crypto-for-laravel` (passkeys ban list). `hash_equals` is **not** banned — it *is* PHP's constant-time compare, not a copy of one, and banning it pushed callers toward `$a === $b`, a timing leak (see `CRYPTO_PRIMITIVES`) |
 | `modelsResolveThroughSeam` | `static::query()`/`self::query()`/`new static` resolving the *called* class, not the *configured* one — it broke authorization (permissions #34); also a swap literal read outside the seam — declare `$modelKeys` if your keys aren't `*_model` shaped |
 | `runtimeRequireIsWhitelisted` | a third-party vendor slipping into `require` and shipping transitively into every consumer (the dependency policy as a test) |
 | `noDebuggingLeftovers` | a stray `dd`/`dump`/`ray` shipped to production |

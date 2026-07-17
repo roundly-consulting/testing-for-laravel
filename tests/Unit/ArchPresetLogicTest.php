@@ -34,6 +34,20 @@ it('bans exactly the openssl primitive a local verifier re-implements', function
         ->toContain('openssl_verify');
 });
 
+it('does not ban hash_equals, which is the correct primitive rather than a copy of one', function (): void {
+    // Pinned, with the reasoning in the CRYPTO_PRIMITIVES docblock. `hash_equals()` IS PHP's
+    // constant-time compare, so the ban fired on correct code; it carries no algorithm or key
+    // to centralize; the cheap way to satisfy it is `$a === $b`, a timing leak that reads as a
+    // harmless simplification; and since `->ignoring()` is class-scoped, exempting a class for
+    // one correct call blinded it to every other primitive. Two packages exempted it
+    // independently before it was removed. Re-adding it must be a decision, not a merge.
+    expect(ArchPresets::CRYPTO_PRIMITIVES)
+        ->not->toContain('hash_equals')
+        // The neighbours stay: both take an algorithm, and that choice is what crypto owns.
+        ->toContain('hash')
+        ->toContain('hash_hmac');
+});
+
 // ---------------------------------------------------------------------------
 // modelsResolveThroughSeam — green, then proves-it-bites.
 // ---------------------------------------------------------------------------
