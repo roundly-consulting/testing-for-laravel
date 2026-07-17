@@ -39,6 +39,24 @@ use PHPUnit\Architecture\Elements\ObjectDescription;
  * stops running is the exact failure this package exists to end. A documented gap beats a
  * check that lies.
  *
+ * ## Exemptions match by PREFIX, so they silence more than they name
+ *
+ * Pest excludes an object when `str_starts_with($object->name, $exclude)` — a **string
+ * prefix** test, not class identity (`pest-plugin-arch/src/Blueprint.php:103`). So
+ * `Stripe::class` also exempts `StripeClient`, and `Metrics::class` also exempts
+ * `MetricsManager`, with nothing reported either time. The rule stops applying to classes
+ * their author still believes are covered — the same "cannot fail on real breakage" defect
+ * as a stale exemption, arrived at from the opposite direction.
+ *
+ * Matching is on the **fully-qualified** name, so this only reaches classes sharing a
+ * namespace *and* a name prefix: `Models\Role` cannot shadow `Database\Factories\RoleFactory`.
+ *
+ * {@see self::finalByDefault()} closes this by re-checking the shadowed classes itself —
+ * see {@see ArchShadows} for why that beats making packages declare their shadows. The
+ * recovery rides on the `$ignoring` parameter, giving the fluent form a second, sharper
+ * cost: it is not merely unchecked, it also silently forfeits this. Fluent callers must
+ * call {@see self::shadowedClassesAreFinal()} themselves.
+ *
  * `finalByDefault` and `swappableModelsAreNotFinal` are deliberately in tension: the
  * first wants everything final, the second forbids `final` on a config-swappable model
  * (shipping it was a PHP fatal error seven times). Run both — exempt the swappable
@@ -157,6 +175,19 @@ final class ArchPresets
      * seven exemptions for it — and every one of those exemptions was a hole in the ban
      * for the concrete classes they were written next to.
      *
+     * ## Exemptions reach further than they read — so the shadow is re-checked
+     *
+     * Pest matches exemptions by string **prefix**, not class identity, so `Stripe::class`
+     * also silences `StripeClient`. Passing `$ignoring` therefore also registers
+     * {@see self::shadowedClassesAreFinal()}, which re-applies this rule by reflection to
+     * every class the exemptions silence without naming. A shadowed class that is already
+     * final stays green; one that is not goes red, naming it. See {@see ArchShadows}.
+     *
+     * That recovery is only wired for the `$ignoring` **parameter**. Pest's fluent
+     * `->ignoring()` cannot be intercepted (see the class docblock), so a package using the
+     * fluent form must call {@see self::shadowedClassesAreFinal()} itself with the same
+     * list — or, better, move the list into this parameter and get both checks for free.
+     *
      * @param  list<string>  $ignoring  exemptions — pinned by {@see self::exemptionsExist()}
      */
     public static function finalByDefault(string $namespace, array $ignoring = []): mixed
@@ -171,7 +202,38 @@ final class ArchPresets
                 && $object->reflectionClass->isAbstract(),
         ]);
 
+        if ($ignoring !== []) {
+            self::shadowedClassesAreFinal($namespace, $ignoring);
+        }
+
         return self::exempt($expectation, $ignoring);
+    }
+
+    /**
+     * Put back the coverage Pest's prefix-matched exemptions silently drop: every class an
+     * exemption list silences **without naming** must still be final.
+     *
+     * {@see self::finalByDefault()} registers this for you when you pass `$ignoring`. Call
+     * it directly only when the exemptions go through Pest's fluent `->ignoring()`, which
+     * this package cannot see:
+     *
+     * ```php
+     * $ignoring = [Github::class, Batch::class];
+     *
+     * ArchPresets::finalByDefault('RoundlyConsulting\Git')->ignoring($ignoring);
+     * ArchPresets::shadowedClassesAreFinal('RoundlyConsulting\Git', $ignoring);
+     * ```
+     *
+     * Bind the list to a variable or constant as above rather than repeating it: two copies
+     * eventually disagree, and this check's whole job is to know what the real list reaches.
+     *
+     * @param  list<string>  $exemptions  the same list handed to `$ignoring` / `->ignoring()`
+     */
+    public static function shadowedClassesAreFinal(string $namespace, array $exemptions): mixed
+    {
+        return it('preset: classes hidden by a prefix-matched exemption are still final', function () use ($namespace, $exemptions): void {
+            ArchShadows::assertShadowedClassesAreFinal($namespace, $exemptions);
+        });
     }
 
     /**

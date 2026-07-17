@@ -404,6 +404,7 @@ ArchPresets::noLocalCryptoPrimitives(string $namespace, array $ignoring = []);
 ArchPresets::modelsResolveThroughSeam(string $srcDir, string $seamDir = 'Support', array $modelKeys = []);
 ArchPresets::runtimeRequireIsWhitelisted(string $composerJson, array $alsoAllow = []);
 ArchPresets::noDebuggingLeftovers(array $ignoring = [], ?string $srcDir = null); // dd/dump/ray/var_dump/print_r
+ArchPresets::shadowedClassesAreFinal(string $namespace, array $exemptions); // only if you use ->ignoring()
 ```
 
 ### Exempt through the `$ignoring` **parameter**, not `->ignoring()`
@@ -439,6 +440,53 @@ package exists to end. A documented gap beats a check that lies. Pass the parame
 Note also that `->ignoring()` and `$ignoring` alike are scoped to a **class**, not a function:
 exempting a class to permit one call relaxes the *whole* ban for that class. Scope it to the
 smallest class that genuinely needs it.
+
+### Exemptions match by **prefix**, so they silence more than they name
+
+Pest excludes an object when `str_starts_with($object->name, $exclude)` — a **string prefix**
+test, not class identity (`pest-plugin-arch/src/Blueprint.php:103`). Exempting one class
+therefore silently exempts every class whose fully-qualified name starts with the same
+characters:
+
+```php
+ArchPresets::finalByDefault('RoundlyConsulting\Purchases', [Stripe::class]);
+// ...also silences StripeClient. Delete its `final` and the suite stays GREEN.
+```
+
+This was found by biting the preset: `StripeClient` was un-finalled on purpose and
+`finalByDefault` never blinked. It is the rot check above inverted — that one catches an
+exemption that silences *nothing*; this catches one that silences *too much*, and it is the
+quieter of the two, because the suite stays green and the exemption list still reads correct.
+
+**`finalByDefault` closes this for you** when you pass `$ignoring`: it re-checks, by
+reflection, every class your exemptions silence without naming. A shadowed class that is
+already final stays green — no declaration, no ceremony. One that is not goes **red**, naming
+the class and the exemption that hid it:
+
+```
+These classes are not final, and `finalByDefault` cannot see them:
+  - RoundlyConsulting\Metrics\MetricsManager (hidden by the exemption RoundlyConsulting\Metrics\Metrics)
+```
+
+If a shadowed class is genuinely meant to stay open, **name it in `$ignoring`**. It is then an
+explicit, reviewable, rot-checked decision rather than a side effect of its neighbour.
+
+Matching is on the **fully-qualified** name, so this only reaches classes sharing a namespace
+*and* a name prefix — `Models\Role` cannot shadow `Database\Factories\RoleFactory`. A
+**namespace** exemption is left alone: excluding a subtree is a deliberate, documented use of
+`->ignoring()`, and the intent is read from the exemption itself (name a class, you meant that
+class; name a namespace, you meant the subtree).
+
+This recovery rides on the `$ignoring` **parameter** — a second, sharper reason to prefer it.
+The fluent form is not merely unchecked; it silently forfeits this too. If you must use it,
+bind the list once and pass the same variable to both:
+
+```php
+$ignoring = [Github::class, Batch::class];
+
+ArchPresets::finalByDefault('RoundlyConsulting\Git')->ignoring($ignoring);
+ArchPresets::shadowedClassesAreFinal('RoundlyConsulting\Git', $ignoring); // fluent form only
+```
 
 **`modelsResolveThroughSeam`: declare `$modelKeys` unless every swap key you own is named
 `model`, `models`, or `*_model`.** Undeclared, its stray-literal half infers swap keys from
