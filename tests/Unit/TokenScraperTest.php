@@ -77,3 +77,157 @@ it('reads array offsets on a section variable', function (): void {
 it('ignores a section variable used without a string offset', function (): void {
     expect(scrapeSource('$x = $rp;', [], ['$rp' => 'shop.rp'])['reads'])->toBe([]);
 });
+
+/**
+ * Injected `Illuminate\Contracts\Config\Repository` reads — the shape that scraped as
+ * *zero reads* in a file with six of them (`http-client-rate-limits`), silently reporting
+ * live, tested keys as unread and inviting an `allowUnread` that asserts a falsehood.
+ */
+it('reads a key through an injected config repository property', function (): void {
+    expect(scrapeSource(<<<'PHP'
+        use Illuminate\Contracts\Config\Repository;
+
+        final class Manager
+        {
+            public function __construct(private readonly Repository $config) {}
+
+            public function run(): void
+            {
+                $this->config->get('shop.cache_store');
+            }
+        }
+        PHP)['reads'])->toBe(['shop.cache_store']);
+});
+
+it('reads a key through an injected config repository parameter', function (): void {
+    expect(scrapeSource(<<<'PHP'
+        use Illuminate\Contracts\Config\Repository;
+
+        function boot(Repository $config): void
+        {
+            $config->get('shop.deferrer');
+        }
+        PHP)['reads'])->toBe(['shop.deferrer']);
+});
+
+it('reads a key through an aliased config repository import', function (): void {
+    expect(scrapeSource(<<<'PHP'
+        use Illuminate\Contracts\Config\Repository as ConfigRepository;
+
+        final class Manager
+        {
+            public function __construct(private readonly ConfigRepository $config) {}
+
+            public function run(): void
+            {
+                $this->config->get('shop.aliased');
+            }
+        }
+        PHP)['reads'])->toBe(['shop.aliased']);
+});
+
+it('reads a key through the concrete config repository class', function (): void {
+    expect(scrapeSource(<<<'PHP'
+        use Illuminate\Config\Repository;
+
+        final class Manager
+        {
+            public function __construct(private readonly Repository $config) {}
+
+            public function run(): void
+            {
+                $this->config->get('shop.concrete');
+            }
+        }
+        PHP)['reads'])->toBe(['shop.concrete']);
+});
+
+it('reads a key through the repository typed-getter family', function (): void {
+    expect(scrapeSource(<<<'PHP'
+        use Illuminate\Contracts\Config\Repository;
+
+        final class Manager
+        {
+            public function __construct(private readonly Repository $config) {}
+
+            public function run(): void
+            {
+                $this->config->string('shop.a');
+                $this->config->integer('shop.b');
+                $this->config->boolean('shop.c');
+                $this->config->array('shop.d');
+            }
+        }
+        PHP)['reads'])->toBe(['shop.a', 'shop.b', 'shop.c', 'shop.d']);
+});
+
+/**
+ * The boundary that makes the binding type-driven rather than name-driven. A cache
+ * repository is a different type, so a lookup under a key that merely shares the prefix is
+ * not a config read. Counting it would *invent* a read — and an invented read blinds the
+ * reverse check on a key that really is dead, which is the failure this whole contract
+ * exists to catch.
+ */
+it('ignores a get on a repository that is not the config repository', function (): void {
+    expect(scrapeSource(<<<'PHP'
+        use Illuminate\Contracts\Cache\Repository;
+
+        final class Manager
+        {
+            public function __construct(private readonly Repository $cache) {}
+
+            public function run(): void
+            {
+                $this->cache->get('shop.cached_thing');
+            }
+        }
+        PHP)['reads'])->toBe([]);
+});
+
+it('ignores a config-repository property read on another object', function (): void {
+    expect(scrapeSource(<<<'PHP'
+        use Illuminate\Contracts\Config\Repository;
+
+        final class Manager
+        {
+            public function __construct(private readonly Repository $config) {}
+
+            public function run(Other $other): void
+            {
+                $other->config->get('shop.not_ours');
+            }
+        }
+        PHP)['reads'])->toBe([]);
+});
+
+it('does not count a repository set as a read', function (): void {
+    expect(scrapeSource(<<<'PHP'
+        use Illuminate\Contracts\Config\Repository;
+
+        final class Manager
+        {
+            public function __construct(private readonly Repository $config) {}
+
+            public function run(): void
+            {
+                $this->config->set('shop.written_only', 1);
+            }
+        }
+        PHP)['reads'])->toBe([]);
+});
+
+it('flags an interpolated key read through an injected repository', function (): void {
+    expect(scrapeSource(<<<'PHP'
+        use Illuminate\Contracts\Config\Repository;
+
+        final class Manager
+        {
+            public function __construct(private readonly Repository $config) {}
+
+            public function run(string $name): void
+            {
+                $this->config->get("shop.{$name}.rate");
+            }
+        }
+        PHP)['interpolations'])->not->toBe([]);
+});
