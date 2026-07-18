@@ -16,6 +16,8 @@ ArchPresets::noLocalCryptoPrimitives('RoundlyConsulting\Testing\Arch');
 
 ArchPresets::modelsResolveThroughSeam($archFixture('seam/green'));
 
+ArchPresets::morphColumnsUseTheSeam($archFixture('morph-seam/seam'));
+
 ArchPresets::runtimeRequireIsWhitelisted($archFixture('composer/whitelisted.json'));
 
 /**

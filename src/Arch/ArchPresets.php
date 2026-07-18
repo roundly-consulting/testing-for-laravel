@@ -7,7 +7,7 @@ namespace RoundlyConsulting\Testing\Arch;
 use PHPUnit\Architecture\Elements\ObjectDescription;
 
 /**
- * Seven composable architecture presets, each grounded in a bug the fleet actually
+ * Eight composable architecture presets, each grounded in a bug the fleet actually
  * shipped. Call one at the top level of a Pest arch file; it registers its own case.
  *
  * ```php
@@ -331,6 +331,48 @@ final class ArchPresets
     {
         return it("preset: models resolve through the {$seamDir} seam, not late static binding", function () use ($srcDir, $seamDir, $modelKeys): void {
             ModelSeam::assert($srcDir, $seamDir, $modelKeys);
+        });
+    }
+
+    /**
+     * Every morph column in `$migrationsDir` goes through the toolkit's `morphKey()` seam —
+     * no raw `$table->morphs()` / `nullableMorphs()` / `uuid`|`ulid` variant, which hardcode
+     * the id key type and break uuid/ulid hosts on a strict engine (SQLite type affinity hides
+     * it). Scanned from source tokens, so a docblock or string literal mentioning `morphs(` is
+     * not a false red, and `morphKey` itself never trips it. See {@see MorphSeam}.
+     *
+     * **Non-vacuous:** a missing directory, or one with zero scannable migration files, fails
+     * rather than passing over nothing. Adopt this only on a package that actually ships
+     * migrations; a package with no morph columns still passes (it scanned real files and found
+     * no violation), and a package with no migrations at all must not call it.
+     *
+     * ## What this does NOT guard — the registration half of the same bug
+     *
+     * The fleet's morph migration also exposed a *runtime* fault: 18 of 22 providers called
+     * `morphKey` from a migration but never registered the Blueprint macro, so a standalone
+     * `php artisan migrate` fatals with `Blueprint::morphKey does not exist` (they "worked" only
+     * because a sibling dependency registered it globally). That is deliberately **not** checked
+     * here, because no static pin can check it honestly:
+     *
+     *  - A source grep for `registerBlueprintMacros(` is a **proxy for a runtime property**, and
+     *    it lies in both directions — green when the call is present but guarded off at boot,
+     *    red when a package registers the macro by any other wiring. It couples the pin to one
+     *    exact convention and asserts a string, not that registration runs.
+     *  - The honest check is **runtime**: boot *only this provider* (no siblings) and assert
+     *    `Blueprint::hasMacro('morphKey')`, or that the migration does not fatal. But a consumer
+     *    suite boots every provider, so a sibling's registration masks a missing one — the same
+     *    masking the real-engine `toApplyOnConnection` pin has, since it loads dependency
+     *    providers. Reproducing the standalone fatal needs an isolated single-provider boot that
+     *    the standard harness actively defeats.
+     *
+     * A documented gap beats a check that lies. The mitigation is a boot-time guard in the
+     * provider (call `registerBlueprintMacros()` in `boot()`), not a green arch pin that cannot
+     * see whether it ran.
+     */
+    public static function morphColumnsUseTheSeam(string $migrationsDir): mixed
+    {
+        return it('preset: morph columns go through the morphKey seam, not raw morphs()', function () use ($migrationsDir): void {
+            MorphSeam::assert($migrationsDir);
         });
     }
 
