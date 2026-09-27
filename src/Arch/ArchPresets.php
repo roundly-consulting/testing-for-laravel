@@ -393,7 +393,7 @@ final class ArchPresets
      *
      * Scanned from **source tokens**, not from Pest's arch layer. As an arch expectation this
      * was 0-for-every-run on `ray`: the arch layer only sees a dependency whose symbol
-     * *exists*, and `acme/ray` is not in our graph by policy — so `ray` was filtered out
+     * *exists*, and the `ray()` debugger package is not in our graph by policy — so `ray` was filtered out
      * before the ban ran and could never fail, while `dd`/`dump`/`var_dump`/`print_r` all bit.
      * The one debug tool a developer would realistically leave behind was the exact one the
      * preset could not catch. See {@see DebugLeftovers} for the measurement.

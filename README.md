@@ -551,7 +551,7 @@ ArchPresets::noDebuggingLeftovers(['RoundlyConsulting\Shops\Debug\Inspector']);
 
 `noDebuggingLeftovers` scans `<cwd>/src` by default; pass `$srcDir` to scan elsewhere. It
 reads **source tokens** rather than Pest's arch layer for a specific reason: the arch layer
-only sees a dependency whose symbol *exists*, and `acme/ray` is not in the dependency
+only sees a dependency whose symbol *exists*, and the `ray()` debugger package is not in the dependency
 graph by policy — so `ray` was filtered out before the ban ran and **could never fail**,
 while the other four bit normally. The one debug tool you'd realistically leave behind was
 the exact one the preset couldn't catch. Tokens don't care whether the function exists.

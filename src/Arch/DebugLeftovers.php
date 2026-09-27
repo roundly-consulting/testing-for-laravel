@@ -22,7 +22,7 @@ use SplFileInfo;
  * parsed name through whether the symbol exists* — `phpunit-architecture-test`'s
  * `ObjectDependenciesDescription` keeps a name only when `function_exists()`, `class_exists()`,
  * `interface_exists()`, `enum_exists()` or `trait_exists()` says yes, and defaults to `false`.
- * `acme/ray` is not in our dependency graph and never will be — the Dependency Policy
+ * The `ray()` debugger package is not in our dependency graph and never will be — the Dependency Policy
  * forbids it — so `ray` is not a defined function, so it is filtered out of every dependency
  * list, so the ban has nothing to compare against and passes. Silently. Measured: a file in
  * `src/` calling `ray()`, `dd()` and `var_dump()` was reported for `dd` and `var_dump` and
@@ -81,7 +81,7 @@ final class DebugLeftovers
             $leftovers,
             'These files call a debugging function that must not ship: '.implode(', ', $leftovers)
             .'. Remove the call. (A left-behind ray() is a fatal Call to undefined function, not a '
-            .'cosmetic problem — acme/ray is deliberately not in the dependency graph.)',
+            .'cosmetic problem — the ray() debugger package is deliberately not in the dependency graph.)',
         );
     }
 
