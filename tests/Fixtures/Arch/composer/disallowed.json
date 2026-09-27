@@ -3,7 +3,7 @@
     "require": {
         "php": "^8.4",
         "illuminate/support": "^12.0|^13.0",
-        "acme/laravel-medialibrary": "^11.0",
+        "acme/media-library": "^11.0",
         "guzzlehttp/guzzle": "^7.0"
     }
 }

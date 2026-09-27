@@ -215,7 +215,7 @@ it('rejects a disallowed third-party vendor in require', function () use ($archF
 
 it('accepts a would-be-disallowed vendor once it is explicitly allowed', function () use ($archFixture): void {
     RuntimeRequires::assert($archFixture('composer/disallowed.json'), [
-        'acme/laravel-medialibrary',
+        'acme/media-library',
         'guzzlehttp/guzzle',
     ]);
 });
