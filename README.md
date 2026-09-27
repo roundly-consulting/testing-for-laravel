@@ -24,9 +24,9 @@ runner, a both-directions config contract, a secret-safe `about` capture, a mode
 recorders, a driver matrix, and seven architecture presets. Every assertion is built so it
 **can always fail**: no vacuous green, no assertion that passes because it never really ran.
 
-Each helper here exists because a real bug shipped past a test that *couldn't* fail —
-a secret-leak check reading empty output, a config regex satisfied by a docblock, a
-migration order green on SQLite but uninstallable on Postgres. So every assertion in this
+Each helper targets a bug that slips past a test that *can't* fail — a secret-leak check
+reading empty output, a config regex satisfied by a docblock, a migration order green on
+SQLite but uninstallable on Postgres. So every assertion in this
 package requires its positive proof, guards its own parse, and ships a "proves-it-bites"
 self-test that goes red on a broken fixture.
 
@@ -86,16 +86,13 @@ it('has a runnable migration order', function (): void {
 });
 ```
 
-**Bug it prevents:** five packages (approvals #2, messages #7, shops #17, teams #20,
-reviews #36) shipped uninstallable migration orders under **green SQLite suites**, because
-SQLite happily creates a table that points at a missing parent and only complains at
-insert time. Teams #20 proved it three times over: of the three order checks, only the
-structural one goes red on SQLite. It understands every FK form the fleet uses —
-`->constrained('table')`, bare `->constrained()` (parent derived from the column, teams
-#20), long-hand `->references('id')->on('table')` (alerts #34), and
-`->constrained(Class::method())` via `tableResolvers` (permissions) — pins that a
-`Schema::table()` ALTER sorts after its CREATE (approvals #2) and that a self-referencing
-key sorts with its own migration (advertisements #33, reviews #36). An unparseable
+**Bug it prevents:** an uninstallable migration order hidden by a **green SQLite suite** —
+SQLite happily creates a table that points at a missing parent and only complains at insert
+time, so of the usual order checks only a structural one goes red there. It understands every
+common FK form — `->constrained('table')`, bare `->constrained()` (parent derived from the
+column), long-hand `->references('id')->on('table')`, and `->constrained(Class::method())` via
+`tableResolvers` — pins that a `Schema::table()` ALTER sorts after its CREATE and that a
+self-referencing key sorts with its own migration. An unparseable
 declaration **fails** rather than being silently dropped, and `foreignKeys:` pins the edge
 count so the check can never pass over an empty parse.
 
@@ -123,7 +120,7 @@ it('rejects a broken order on postgres', function (): void {
 ```
 
 **Bug it prevents:** a green FK test proves nothing until you have watched the engine
-*reject* the broken order (forms #28). `toRejectBrokenOrderOnConnection` is that negative
+*reject* the broken order. `toRejectBrokenOrderOnConnection` is that negative
 control — it passes only if the engine refuses the reordered set, and **fails loudly** if
 the engine accepts it (a driver that does not enforce foreign keys, like SQLite, makes the
 check vacuous).
@@ -149,20 +146,17 @@ Roundly packages **migrate forward only**. The developer standard is explicit:
 > **Never define a `down()` method** — packages migrate forward only; a rollback path is
 > dead code that drifts out of sync with `up()`.
 
-So there is no rollback pin here, and **nothing in this package asks you for a `down()`**.
-That is a deliberate correction: an earlier `toRollBackCleanly` asserted the inverse of the
-standard, went red across all 30 packages it was tried on, and was deleted. 94 of the fleet's
-98 migration files ship no `down()` because they are *complying*.
+So there is no rollback pin here, and **nothing in this package asks you for a `down()`**: a
+migration without one is *complying* with the standard, not incomplete.
 
-**The failure that looked like it needed `down()`.** Turning this package's own pgsql leg
-real surfaced 22–26 failures, every one a `relation "..." already exists`. The cause reads
-like a missing `down()`, and isn't. Testbench's `loadMigrationsFrom()` resets state by
+**The failure that looks like it needs `down()`.** On a real pgsql or mysql leg a suite can fail
+with `relation "..." already exists`. The cause reads like a missing `down()`, and isn't. Testbench's `loadMigrationsFrom()` resets state by
 running `migrate:rollback` after each test; `Migrator::runMigration()` guards `down()` with
 `method_exists`, so for a compliant package that rollback is a **silent no-op**. On SQLite
 `:memory:` it never mattered — the database dies with the connection. On a real engine the
 tables survive and the **next** test dies creating them again, naming an innocent migration.
 
-**The fix is to stop asking for a rollback**, not to write 94 `down()`s.
+**The fix is to stop asking for a rollback**, not to write `down()` methods.
 [`PackageTestCase`](#packagetestcase) resets a real engine by **dropping every table and
 re-migrating**, which restores the same state with zero `down()`. You get this for free by
 extending the base case — there is nothing to configure:
@@ -201,8 +195,8 @@ expect(PasskeysServiceProvider::class)->toNotAutoLoadMigrations();
 expect(PasskeysServiceProvider::class)->toPublishMigrationsTimestamped('passkeys-migrations', 3);
 ```
 
-**Bug it prevents:** the fleet publishes migrations timestamped rather than auto-loading
-them; doing both runs both copies — a duplicate-table failure (bug #5, on three packages).
+**Bug it prevents:** Roundly packages publish migrations timestamped rather than auto-loading
+them; doing both runs both copies — a duplicate-table failure.
 These two expectations only make sense against a package service provider, so they are
 **package-only** — an app has no provider to point them at.
 
@@ -232,9 +226,8 @@ on a cache repository is correctly not a config read.
 `$rl['public']['enabled']` counts as a read of `pkg.rate_limiters.public.enabled`. It maps a
 local (`$rl`) or a property (`'$this->config'`) alike.
 
-Both directions are reported **together**. They are independent halves computed from one
-read-set, and the forward half used to throw first — on `kubernetes-api` that masked 39 unread
-keys until the forward failure was fixed and the suite re-run.
+Both directions are reported **together**: they are independent halves computed from one
+read-set, so a forward failure never hides the reverse findings behind it.
 
 ### What gets scanned — and why a REVERSE finding is not proof of a dead key
 
@@ -304,16 +297,13 @@ a driver it never selects is correct, not dead. A driver stanza no factory can b
 defect, but a *registry* one; this contract does not claim to catch it.
 
 **Bugs it prevents:**
-- **Forward** (every key the code reads is shipped) — shops #18: the whole store-credit
-  feature read `shops.payments.*` while the file shipped `payment.*`, so
-  `SHOPS_ALLOW_STORE_CREDIT` did nothing and 330 tests stayed green because the suite set
-  the same wrong key.
-- **Reverse** (every shipped leaf is read) — alerts #24 (a thrice-documented `escalation`
-  key nothing read), media #27 (a `max_file_size` cap that never applied — an upload
-  endpoint with *no size limit*), query-builder #32, permissions' dead `load_migrations`.
-- **Tokenizer, not regex** — media #27's near-miss: a regex over raw text was satisfied by
-  a *docblock mention* and stayed green with the fix reverted. A docblock is a comment
-  token here, never a read.
+- **Forward** (every key the code reads is shipped) — a feature that reads `pkg.payments.*`
+  while the config file ships `payment.*`: its env switch does nothing, and the whole suite
+  stays green because the tests set the same wrong key.
+- **Reverse** (every shipped leaf is read) — a documented key nothing reads, like a
+  `max_file_size` cap that never applies and leaves an upload endpoint with *no size limit*.
+- **Tokenizer, not regex** — a regex over raw text is satisfied by a *docblock mention* and
+  stays green with the fix reverted. A docblock is a comment token here, never a read.
 
 A key that resolves to no checkable pattern is **flagged**, never silently ignored — and there
 is deliberately **no allow-list** for it: that check runs before the forward and reverse checks
@@ -354,10 +344,9 @@ expect('passkeys')->toLeakNoSecrets(
 );
 ```
 
-**Bug it prevents:** purchases #13 — the fleet's most credential-heavy `about` section was
-guarded by a negative assertion against `app(Kernel::class)->output()`, which returns `''`.
-Every "does not leak" check was vacuous; the leak was caught only because one positive
-assertion happened to exist. This capture goes through `Artisan::call('about', …)` +
+**Bug it prevents:** a credential-heavy `about` section guarded by a negative assertion
+against `app(Kernel::class)->output()`, which returns `''` — every "does not leak" check is
+vacuous, and a leak slips through unless a positive assertion happens to exist. This capture goes through `Artisan::call('about', …)` +
 `Artisan::output()` and runs in order: (1) output non-empty, (2) every `$mustRender` string
 present, (3) only then no secret renders. `$mustRender` is required and non-empty — an
 empty list throws at call time, because a negative-only check can pass against empty output.
@@ -383,21 +372,19 @@ expect('media.media_model')->toHonourModelSwap(CustomMedia::class, function () u
 });
 ```
 
-**Bug it prevents:** the retrofit's single biggest class (12+ entries) — implicit `hasMany`
+**Bugs it prevents:** the most common way a model swap silently fails — implicit `hasMany`
 FKs derived from the parent class name, bare `belongsToMany()` deriving the pivot,
-`static::query()` in a `findOrCreate` helper (permissions #31/#34), hard-coded call sites
-beside an honoured config (shops #3, media #28), and `final` on the invited subclass (7×).
+`static::query()` in a `findOrCreate` helper, hard-coded call sites beside an honoured config,
+and `final` on the invited subclass.
 It fails fast if `config($configKey) !== $subclass` (you forgot the before-boot swap), then
 asserts every returned model's **concrete class** is `$subclass` — `instanceof` is not
 enough, because a row created as the packaged class never fires the host's model events —
 and finally that a `created` event landed on `$subclass` itself, the only proof the row was
-really created *as* the host class (#31).
+really created *as* the host class.
 
-`CountsCreations` is **required**, not detected. It used to be opt-in, and omitting it
-dropped the created-event half in silence — 15 assertions quietly became 13, so a caller who
-had never thought about the trait got a weaker proof under the same name (`alerts`'
-seam-bypass proof stayed green until the trait was added). A missing trait now fails with
-instructions. For a flow that genuinely creates no row, say so explicitly:
+`CountsCreations` is **required**, not detected: without it the created-event half of the
+proof would silently drop out, leaving a weaker proof under the same name. A missing trait
+fails with instructions. For a flow that genuinely creates no row, say so explicitly:
 
 ```php
 expect('media.media_model')->toHonourModelSwap(
@@ -409,8 +396,8 @@ expect('media.media_model')->toHonourModelSwap(
 
 ## Architecture presets
 
-Seven composable presets, each grounded in a bug the fleet shipped. Call one at the top of
-a Pest arch file; it registers its own case.
+Seven composable presets, each aimed at a real class of bug. Call one at the top of a Pest
+arch file; it registers its own case.
 
 ```php
 use RoundlyConsulting\Testing\Arch\ArchPresets;
@@ -455,8 +442,8 @@ ArchPresets::exemptionsExist($ignoring, 'no facades outside the facade layer');
 
 The three presets built on Pest's arch layer (`strictTypes`, `finalByDefault`,
 `noLocalCryptoPrimitives`) return the underlying arch expectation, so Pest's fluent
-`->ignoring(...)` still composes on them — **but it is not checked, and this README used to
-teach it.** The two forms are not equivalent:
+`->ignoring(...)` still composes on them — **but it is not checked.** The two forms are not
+equivalent:
 
 ```php
 // Checked: a stale or misspelled entry FAILS.
@@ -572,18 +559,18 @@ the exact one the preset couldn't catch. Tokens don't care whether the function 
 |---|---|
 | `strictTypes` | files drifting off `declare(strict_types=1)`, so a silent type coercion slips in |
 | `finalByDefault` | accidental extension points; classes meant to be closed left open |
-| `swappableModelsAreNotFinal` | `final` on a config-swappable model — a PHP fatal the moment a host swaps it, shipped **7×** (shops #19, teams #21, advertisements #23, alerts #25, reports #33, posts #35, passkeys #37) |
+| `swappableModelsAreNotFinal` | `final` on a config-swappable model — a PHP fatal the moment a host swaps it, invisible to a green "everything is final" arch test |
 | `noLocalCryptoPrimitives` | crypto primitives (`hash`, `hash_hmac`, `openssl_*`, `sodium_*`, `random_bytes`, `base64_*`) re-implemented locally instead of in `crypto-for-laravel` (passkeys ban list). `hash_equals` is **not** banned — it *is* PHP's constant-time compare, not a copy of one, and banning it pushed callers toward `$a === $b`, a timing leak (see `CRYPTO_PRIMITIVES`) |
-| `modelsResolveThroughSeam` | `static::query()`/`self::query()`/`new static` **in a static context** resolving the *called* class, not the *configured* one — it broke authorization (permissions #34); also a swap literal read outside the seam — declare `$modelKeys` if your keys aren't `*_model` shaped |
+| `modelsResolveThroughSeam` | `static::query()`/`self::query()`/`new static` **in a static context** resolving the *called* class, not the *configured* one — a swapped model that authorization silently ignores; also a swap literal read outside the seam — declare `$modelKeys` if your keys aren't `*_model` shaped |
 | `runtimeRequireIsWhitelisted` | a third-party vendor slipping into `require` and shipping transitively into every consumer (the dependency policy as a test) |
 | `noDebuggingLeftovers` | a stray `dd`/`dump`/`ray` shipped to production |
 
 ### The deliberate tension: `finalByDefault` vs `swappableModelsAreNotFinal`
 
 These two presets pull in opposite directions **on purpose**. `finalByDefault` wants every
-class final; `swappableModelsAreNotFinal` forbids `final` on a config-swappable model. The
-fleet shipped `final` on a swappable model seven times under a green "everything is final"
-arch test — a documented seam that was a PHP fatal error. Run **both**: exempt the swappable
+class final; `swappableModelsAreNotFinal` forbids `final` on a config-swappable model, which
+passes a green "everything is final" arch test yet turns a documented seam into a PHP fatal
+error. Run **both**: exempt the swappable
 models from the first (through the checked `$ignoring` parameter), pin them with the second.
 
 ```php
@@ -656,12 +643,12 @@ expect(LockRecorder::recorded()[0]['transactionDepth'])->toBe(1); // depth kille
 
 Variant B installs `LockRecordingGrammar`, which compiles the lock to a trailing
 `/* lock-for-update */` SQL comment observed via `DB::listen()` — for when the model is not
-subclassable. **Bug they prevent:** the alerts #26 races (an alert that never opened; a tier
-paged twice) and the shops oversell, all invisible on SQLite otherwise.
+subclassable. **Bugs they prevent:** missing row locks behind races — an alert that never
+opens, a tier paged twice, an oversold stock item — all invisible on SQLite otherwise.
 
 `DriverMatrix` runs a suite across drivers so a SQLite-only run doesn't miss what the engines
-disagree on — **translatable #39**: a `LIKE` without `ESCAPE` is green on Postgres and
-returns zero rows on SQLite.
+disagree on — for example, a `LIKE` without `ESCAPE` is green on Postgres and returns zero
+rows on SQLite.
 
 ```php
 use RoundlyConsulting\Testing\Database\DriverMatrix;

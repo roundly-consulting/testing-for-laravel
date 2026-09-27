@@ -187,8 +187,6 @@ final class DriverMatrix
     /**
      * One `TESTING_DB_*` value for a driver, or the driver's own default when the
      * location cannot be describing that driver.
-     *
-     * `TESTING_DB_USER` is honoured as a legacy alias for `TESTING_DB_USERNAME`.
      */
     private static function location(string $driver, string $key, string $default): string
     {
@@ -197,10 +195,6 @@ final class DriverMatrix
         }
 
         $value = env("TESTING_DB_{$key}");
-
-        if ($value === null && $key === 'USERNAME') {
-            $value = env('TESTING_DB_USER');
-        }
 
         return $value === null ? $default : (string) $value;
     }
