@@ -16,11 +16,23 @@ use RoundlyConsulting\Testing\Support\ProviderMigrationDirectory;
  * copies — a duplicate-table failure that hit three packages. The directory is
  * resolved from the provider by reflection, so the default (no explicit path) works
  * for any roundly package.
+ *
+ * The provider must be registered in the running app: one that never booted cannot have
+ * called `loadMigrationsFrom()`, and passing it would be vacuous.
  */
 final class MigrationAutoload
 {
     public static function assert(string $providerClass, ?string $migrationsDir = null): void
     {
+        // A provider that never booted registered nothing, so "does not auto-load" would be
+        // trivially true of it — the pin must run against the provider the app really boots.
+        Assert::assertNotNull(
+            app()->getProvider($providerClass),
+            "{$providerClass} is not registered in this app, so it cannot have registered any migration paths — "
+            .'this check would pass without testing anything. Add it to packageProviders() in the TestCase this '
+            .'test is bound to.',
+        );
+
         $directory = $migrationsDir ?? ProviderMigrationDirectory::locate($providerClass);
 
         Assert::assertDirectoryExists($directory, "Migrations directory does not exist: {$directory}");
