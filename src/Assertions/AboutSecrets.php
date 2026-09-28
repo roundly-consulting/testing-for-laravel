@@ -23,7 +23,11 @@ use PHPUnit\Framework\Assert;
  *   3. only then assert no `$secrets` entry renders.
  *
  * A negative-only test can pass without proving anything ran. `$mustRender` is therefore
- * required and non-empty: an empty list is a construction error, thrown at call time.
+ * required and non-empty: an empty list is a construction error, thrown at call time. So is
+ * a blank entry in either list — an empty needle is in every output, and a secret that is
+ * `null` or `''` (an unset config key or env var) can never be found, so the leak check would
+ * pass while checking nothing. An empty `$secrets` *list* is allowed: that is a render-only
+ * check, and it says so.
  */
 final class AboutSecrets
 {
@@ -39,6 +43,9 @@ final class AboutSecrets
                 .'secret check can pass vacuously against empty output.',
             );
         }
+
+        self::assertNonEmptyStrings($mustRender, 'mustRender', 'an empty needle is found in every output, so it proves nothing rendered');
+        self::assertNonEmptyStrings($secrets, 'secrets', 'a secret that is not set cannot leak, so the check would pass without checking anything — set a real value in the test first');
 
         Artisan::call('about', ['--only' => $section]);
         $output = Artisan::output();
@@ -60,15 +67,29 @@ final class AboutSecrets
         }
 
         foreach ($secrets as $secret) {
-            if (trim($secret) === '') {
-                continue;
-            }
-
             Assert::assertStringNotContainsString(
                 $secret,
                 $output,
                 "The `{$section}` about section leaked a secret: '{$secret}'.",
             );
+        }
+    }
+
+    /**
+     * Every entry must be a non-blank string. `null` arrives from `config('not.set')`; `''`
+     * from an unset env var. Both made a check that looks like it runs, and does not.
+     *
+     * @param  array<array-key, mixed>  $values
+     */
+    private static function assertNonEmptyStrings(array $values, string $name, string $why): void
+    {
+        foreach ($values as $index => $value) {
+            if (! is_string($value) || trim($value) === '') {
+                throw new InvalidArgumentException(
+                    "aboutSectionLeaksNoSecrets \${$name}[{$index}] is ".(is_string($value) ? "'{$value}'" : get_debug_type($value))
+                    .": {$why}.",
+                );
+            }
         }
     }
 }

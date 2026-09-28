@@ -29,13 +29,31 @@ it('passes when the section renders its proof and no secret', function (): void 
     );
 });
 
-it('ignores empty secret entries', function (): void {
+it('rejects a secret that is not set, instead of silently checking nothing', function (mixed $secret): void {
+    // `secrets: [config('services.stripe.secret')]` in an app without that key is `null` — it
+    // used to be a TypeError, and an empty string was skipped without a word, so the "does not
+    // leak" half passed while checking nothing.
     renderAbout(['Sign-count policy' => 'enabled']);
 
-    expect('testing')->toLeakNoSecrets(
-        secrets: ['', '   '],
+    expect(fn (): mixed => expect('testing')->toLeakNoSecrets(
+        secrets: ['super-secret-signing-key', $secret],
         mustRender: ['Sign-count policy'],
-    );
+    ))->toThrow(InvalidArgumentException::class, 'secrets[1]');
+})->with(['null' => [null], 'empty' => [''], 'blank' => ['   '], 'not a string' => [42]]);
+
+it('rejects an empty mustRender entry, which every output contains', function (): void {
+    renderAbout(['Sign-count policy' => 'enabled']);
+
+    expect(fn (): mixed => expect('testing')->toLeakNoSecrets(
+        secrets: ['super-secret-signing-key'],
+        mustRender: ['Sign-count policy', ''],
+    ))->toThrow(InvalidArgumentException::class, 'mustRender[1]');
+});
+
+it('still accepts an empty secrets list for a render-only check', function (): void {
+    renderAbout(['Sign-count policy' => 'enabled']);
+
+    expect('testing')->toLeakNoSecrets(secrets: [], mustRender: ['Sign-count policy']);
 });
 
 // ---------------------------------------------------------------------------

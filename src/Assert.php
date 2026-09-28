@@ -127,7 +127,8 @@ final class Assert
     /**
      * Secondary escape hatch for `expect($section)->toLeakNoSecrets(...)`: capture one
      * `artisan about` section and pin it renders every $mustRender string and leaks no
-     * $secrets. $mustRender must be non-empty (a construction error otherwise).
+     * $secrets. $mustRender must be non-empty, and no entry of either list may be null or
+     * blank (a construction error otherwise).
      *
      * @param  list<string>  $secrets
      * @param  list<string>  $mustRender
