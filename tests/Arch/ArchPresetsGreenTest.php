@@ -24,6 +24,9 @@ ArchPresets::runtimeRequireIsWhitelisted($archFixture('composer/whitelisted.json
 
 ArchPresets::modelsGoThroughTheFacade('RoundlyConsulting\Testing\Tests\Fixtures\Facades\Teams');
 
+// Per-area layout: the model lives in Booths\, its trait in Support\ — both scanned, both clean.
+ArchPresets::modelsGoThroughTheFacade('RoundlyConsulting\Testing\Tests\Fixtures\Facades\Kiosks');
+
 /**
  * A live exemption list on the facade preset: Widgets' model and trait DO call actions, and
  * are exempted — so the preset case and the existence pin it registers must both pass.

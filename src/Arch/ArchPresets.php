@@ -424,17 +424,20 @@ final class ArchPresets
     /**
      * Model convenience methods and model traits reach behaviour through the **manager**,
      * never straight through an action: no class or trait under `{$namespace}\Models`,
-     * `{$namespace}\Concerns` or `{$namespace}\Traits` may reference anything in
-     * `{$namespace}\Actions`. A trait that calls `app(LikePost::class)` is invisible to
-     * `Likes::fake()`, which swaps the manager — the fake then misses every call made through
-     * the model. See {@see ModelsThroughFacade}.
+     * `{$namespace}\Concerns` or `{$namespace}\Traits`, no Eloquent model anywhere under
+     * `{$namespace}` (per-area layouts like `Shops\Cart\Cart` included), and no package trait
+     * such a model uses (recursively) may reference anything in `{$namespace}\Actions`.
+     * `{$namespace}\Actions` and `{$namespace}\Testing` are never scanned. A trait that calls
+     * `app(LikePost::class)` is invisible to `Likes::fake()`, which swaps the manager — the fake
+     * then misses every call made through the model. See {@see ModelsThroughFacade}.
      *
      * ```php
      * ArchPresets::modelsGoThroughTheFacade('RoundlyConsulting\Likes');
      * ```
      *
-     * **Non-vacuous:** if none of the three namespaces holds a class, the case fails — a package
-     * with no models or model traits must not call this preset. Scanned from source tokens, so
+     * **Non-vacuous:** if no model exists anywhere under the namespace and none of the three
+     * namespaces holds a class, the case fails — a package with no models or model traits must
+     * not call this preset. Scanned from source tokens, so
      * an action named only in a docblock is not a violation.
      *
      * Exemptions go through `$ignoring` (class or namespace names, prefix-matched) and are pinned

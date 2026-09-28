@@ -4,11 +4,15 @@ declare(strict_types=1);
 
 namespace RoundlyConsulting\Testing\Arch;
 
+use Illuminate\Database\Eloquent\Model;
 use PHPUnit\Framework\Assert;
+use ReflectionClass;
+use RoundlyConsulting\Testing\Assertions\Facades\DeclaredClass;
 use RoundlyConsulting\Testing\Assertions\Facades\DeclaredClasses;
 use RoundlyConsulting\Testing\Assertions\Facades\SourceReferences;
 use RoundlyConsulting\Testing\Support\PhpFiles;
 use RoundlyConsulting\Testing\Support\Psr4Directories;
+use Throwable;
 
 /**
  * One path into a package's behaviour: model convenience methods and model traits go
@@ -26,11 +30,31 @@ use RoundlyConsulting\Testing\Support\Psr4Directories;
  *
  * ## What is checked
  *
- * Every class or trait under `{namespace}\Models`, `{namespace}\Concerns` and
- * `{namespace}\Traits` (resolved through the Composer PSR-4 map, recursively) must not
- * reference anything under `{namespace}\Actions` — imports included. References are resolved
- * from source tokens ({@see SourceReferences}), so an action named in a docblock is not a
- * violation and an aliased or grouped import still is.
+ * Three sets of subjects, none of which may reference anything under `{namespace}\Actions` —
+ * imports included:
+ *
+ * 1. every class or trait under `{namespace}\Models`, `{namespace}\Concerns` and
+ *    `{namespace}\Traits` (the host-model traits live here even when no package model uses
+ *    them);
+ * 2. every class **anywhere** under `{namespace}` that extends Eloquent's `Model` — so a
+ *    package that groups its models by area (`Shops\Cart\Cart`, `Shops\Orders\Order`) is
+ *    covered without naming each folder;
+ * 3. every trait in `{namespace}` used by a subject above, recursively (a trait a trait
+ *    uses counts), wherever it lives (`Support\TracksTotals`).
+ *
+ * Classes under `{namespace}\Actions` and `{namespace}\Testing` are never subjects: actions
+ * compose actions, and a fake is the one place that stands in for them.
+ *
+ * Declarations are read from source tokens and resolved through the Composer PSR-4 map;
+ * "extends `Model`" and "uses trait" come from reflection after autoload. A class that
+ * cannot be autoloaded (a file declaring a name PSR-4 does not map, an integration whose
+ * parent class is not installed) cannot be a working model, so it is skipped. References are
+ * resolved from source tokens ({@see SourceReferences}), so an action named in a docblock is
+ * not a violation and an aliased or grouped import still is.
+ *
+ * A non-model class outside the three namespaces (a `Support\Pruner` the manager holds) and a
+ * trait no model uses (a helper trait that splits the manager) are **not** subjects: calling
+ * actions is their job.
  *
  * ## Exemptions and vacuity
  *
@@ -39,19 +63,27 @@ use RoundlyConsulting\Testing\Support\Psr4Directories;
  * {@see ArchPresets::exemptionsExist()} (the name must exist), and this check fails an entry
  * that exempts **no violating class** — an exemption that outlived its violation is stale.
  *
- * If none of the three namespaces holds a class, the check fails: a scan of nothing cannot
- * catch a bypass, and a package with no models or model traits should not call the preset.
+ * If no subject is found at all — no model anywhere under the namespace and nothing in the
+ * three namespaces — the check fails: a scan of nothing cannot catch a bypass, and a package
+ * with no models or model traits should not call the preset.
  *
  * This is the assertion behind {@see ArchPresets::modelsGoThroughTheFacade()}.
  */
 final class ModelsThroughFacade
 {
     /**
-     * The namespaces scanned, relative to the package namespace.
+     * The namespaces whose every declaration is scanned, relative to the package namespace.
      *
      * @var list<string>
      */
     public const array SCANNED = ['Models', 'Concerns', 'Traits'];
+
+    /**
+     * The namespaces never scanned as subjects, relative to the package namespace.
+     *
+     * @var list<string>
+     */
+    public const array EXCLUDED = ['Actions', 'Testing'];
 
     /**
      * @param  list<string>  $ignoring  class/namespace exemptions — pinned by {@see ArchExemptions}
@@ -61,44 +93,33 @@ final class ModelsThroughFacade
         $namespace = trim($namespace, '\\');
         $actions = $namespace.'\\Actions\\';
 
-        $scanned = [];
-        $violations = [];
-
-        foreach (self::SCANNED as $segment) {
-            foreach (Psr4Directories::for($namespace.'\\'.$segment) as $dir) {
-                foreach (PhpFiles::in($dir) as $file) {
-                    $source = (string) file_get_contents($file);
-                    $classes = DeclaredClasses::inSource($source, $file);
-
-                    if ($classes === []) {
-                        continue;
-                    }
-
-                    $used = array_values(array_filter(
-                        SourceReferences::inSource($source, withImports: true),
-                        static fn (string $name): bool => str_starts_with($name.'\\', $actions),
-                    ));
-
-                    sort($used);
-
-                    foreach ($classes as $class) {
-                        $scanned[$class->name] = true;
-
-                        if ($used !== []) {
-                            $violations[$class->name] = $used;
-                        }
-                    }
-                }
-            }
-        }
+        $subjects = self::subjects($namespace);
 
         Assert::assertNotSame(
             [],
-            $scanned,
-            "Neither {$namespace}\\Models, {$namespace}\\Concerns nor {$namespace}\\Traits holds a class, so there "
-            .'is nothing for modelsGoThroughTheFacade() to guard and it cannot fail. A package with no models or '
-            .'model traits should not call it (and a typo in the namespace lands here too).',
+            $subjects,
+            "No Eloquent model anywhere under {$namespace}, and no class in {$namespace}\\Models, "
+            ."{$namespace}\\Concerns or {$namespace}\\Traits, so there is nothing for modelsGoThroughTheFacade() "
+            .'to guard and it cannot fail. A package with no models or model traits should not call it (and a '
+            .'typo in the namespace lands here too).',
         );
+
+        $references = [];
+        $violations = [];
+
+        foreach ($subjects as $class => [$file, $reason]) {
+            $references[$file] ??= array_values(array_filter(
+                SourceReferences::inFile($file, withImports: true),
+                static fn (string $name): bool => str_starts_with($name.'\\', $actions),
+            ));
+
+            $used = $references[$file];
+
+            if ($used !== []) {
+                sort($used);
+                $violations[$class] = implode(', ', $used)." ({$reason})";
+            }
+        }
 
         ksort($violations);
 
@@ -114,7 +135,7 @@ final class ModelsThroughFacade
                 continue;
             }
 
-            $problems[] = "{$class} uses ".implode(', ', $used);
+            $problems[] = "{$class} uses {$used}";
         }
 
         foreach ($ignoring as $entry) {
@@ -131,6 +152,113 @@ final class ModelsThroughFacade
             ."(`app(<Domain>Manager::class)->…`), never through {$namespace}\\Actions directly — otherwise the "
             ."facade's fake() never sees the call:\n  - ".implode("\n  - ", $problems),
         );
+    }
+
+    /**
+     * Every subject, keyed by class name, with the file it is declared in and why it is
+     * scanned (for the failure message).
+     *
+     * @return array<string, array{0: string, 1: string}>
+     */
+    private static function subjects(string $namespace): array
+    {
+        $subjects = [];
+
+        foreach (self::SCANNED as $segment) {
+            foreach (self::declarations($namespace.'\\'.$segment) as $class) {
+                $subjects[$class->name] ??= [$class->file, "in {$namespace}\\{$segment}"];
+            }
+        }
+
+        foreach (self::declarations($namespace) as $class) {
+            if ($class->kind === DeclaredClass::CLASS_KIND
+                && ! self::excluded($class->name, $namespace)
+                && self::isModel($class->name)) {
+                $subjects[$class->name] ??= [$class->file, 'an Eloquent model'];
+            }
+        }
+
+        $queue = array_keys($subjects);
+
+        while ($queue !== []) {
+            $user = array_shift($queue);
+
+            foreach (self::traitsOf($user) as $trait => $file) {
+                if (isset($subjects[$trait])
+                    || ! str_starts_with($trait, $namespace.'\\')
+                    || self::excluded($trait, $namespace)) {
+                    continue;
+                }
+
+                $subjects[$trait] = [$file, "a trait used by {$user}"];
+                $queue[] = $trait;
+            }
+        }
+
+        return $subjects;
+    }
+
+    /**
+     * @return list<DeclaredClass>
+     */
+    private static function declarations(string $namespace): array
+    {
+        $declared = [];
+
+        foreach (Psr4Directories::for($namespace) as $dir) {
+            foreach (PhpFiles::in($dir) as $file) {
+                foreach (DeclaredClasses::inSource((string) file_get_contents($file), $file) as $class) {
+                    $declared[] = $class;
+                }
+            }
+        }
+
+        return $declared;
+    }
+
+    private static function excluded(string $class, string $namespace): bool
+    {
+        foreach (self::EXCLUDED as $segment) {
+            if (str_starts_with($class, $namespace.'\\'.$segment.'\\')) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static function isModel(string $class): bool
+    {
+        try {
+            return class_exists($class) && is_subclass_of($class, Model::class);
+        } catch (Throwable) {
+            // Declared but unloadable (a parent class that is not installed): not a working model.
+            return false;
+        }
+    }
+
+    /**
+     * The traits a class or trait uses directly, with the file each is declared in.
+     *
+     * @return array<string, string>
+     */
+    private static function traitsOf(string $class): array
+    {
+        try {
+            if (! class_exists($class) && ! trait_exists($class)) {
+                return [];
+            }
+        } catch (Throwable) {
+            return [];
+        }
+
+        $traits = [];
+
+        foreach ((new ReflectionClass($class))->getTraits() as $trait) {
+            $traits[$trait->getName()] = (string) $trait->getFileName();
+        }
+
+        return $traits;
     }
 
     /**

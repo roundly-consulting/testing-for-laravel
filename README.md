@@ -432,8 +432,10 @@ ArchPresets::modelsGoThroughTheFacade('RoundlyConsulting\Teams');
   DTOs, events, enums, exceptions, the fake and other actions are never surface. A helper the
   manager *holds* but never *returns* goes in `$via`.
 - **`ArchPresets::modelsGoThroughTheFacade($namespace, $ignoring = [])`** — nothing under
-  `{ns}\Models`, `{ns}\Concerns` or `{ns}\Traits` references `{ns}\Actions`, so `$user->like()`
-  goes through the manager and the fake sees it.
+  `{ns}\Models`, `{ns}\Concerns` or `{ns}\Traits`, no Eloquent model anywhere under `{ns}`
+  (per-area layouts like `Shops\Cart\Cart` too) and no package trait such a model uses
+  (recursively, wherever it lives) references `{ns}\Actions`, so `$user->like()` goes through
+  the manager and the fake sees it. `{ns}\Actions` and `{ns}\Testing` are never scanned.
 
 **Bugs they prevent:** facades with zero `@method` lines over a real manager, docblocks
 naming renamed methods, fakes that crashed dependency injection, fakes bypassed by model

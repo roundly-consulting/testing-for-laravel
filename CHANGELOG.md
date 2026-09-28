@@ -32,7 +32,9 @@ Initial public release.
 - Nine composable architecture presets in `ArchPresets`, from strict types and final-by-default
   to a runtime-dependency whitelist, a no-debugging-leftovers check and
   `modelsGoThroughTheFacade()`, which keeps model methods and traits from calling actions
-  behind the fake's back.
+  behind the fake's back — it scans `Models`/`Concerns`/`Traits`, every Eloquent model anywhere
+  in the package (per-area folders included) and every package trait those models use,
+  recursively.
 - `PackageTestCase`, a Testbench base case with foreign keys on, provider-based migration
   loading and model swaps applied before boot.
 - Lock recorders that make `lockForUpdate()` observable on SQLite, and a `DriverMatrix` for
