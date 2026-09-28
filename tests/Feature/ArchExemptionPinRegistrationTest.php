@@ -136,3 +136,17 @@ it('still reports classes shadowed by the SECOND finalByDefault exemption list',
     // exist, so pin it: if this ever goes red, Pest changed and the docs need revisiting.
     expect($results['preset: classes are final by default in RoundlyConsulting\Testing\Tests\Fixtures\Arch\Shadow'])->toBeTrue();
 });
+
+it('fails a stale exemption on the facade preset, in its pin and in the case itself', function () use ($runArchFixture, $fixture): void {
+    $results = $runArchFixture($fixture('facade-seam-stale'));
+
+    $label = 'models go through the facade in RoundlyConsulting\Testing\Tests\Fixtures\Facades\Widgets';
+
+    // The existence pin: `Models\Gadget` names nothing.
+    expect($results)->toHaveKey("it preset: every arch exemption for {$label} still silences something")
+        ->and($results["it preset: every arch exemption for {$label} still silences something"])->toBeFalse();
+
+    // The case: the same entry exempts no violating class.
+    expect($results)->toHaveKey("it preset: {$label}")
+        ->and($results["it preset: {$label}"])->toBeFalse();
+});

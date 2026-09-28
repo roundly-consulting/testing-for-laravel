@@ -7,7 +7,7 @@ namespace RoundlyConsulting\Testing\Arch;
 use PHPUnit\Architecture\Elements\ObjectDescription;
 
 /**
- * Eight composable architecture presets, each grounded in a bug the fleet actually
+ * Nine composable architecture presets, each grounded in a bug the fleet actually
  * shipped. Call one at the top level of a Pest arch file; it registers its own case.
  *
  * ```php
@@ -33,10 +33,11 @@ use PHPUnit\Architecture\Elements\ObjectDescription;
  * {@see self::finalByDefault()}, {@see self::noLocalCryptoPrimitives()}) return the
  * underlying arch expectation, so Pest's fluent `->ignoring(...)` also composes on them —
  * **unchecked**. The same bogus entry fails through the parameter and passes green through
- * the fluent call, and the docs used to teach the fluent one. The four presets Pest's arch
+ * the fluent call, and the docs used to teach the fluent one. The six presets Pest's arch
  * layer cannot express ({@see self::swappableModelsAreNotFinal()},
- * {@see self::modelsResolveThroughSeam()}, {@see self::runtimeRequireIsWhitelisted()},
- * {@see self::noDebuggingLeftovers()}) register a token/reflection `it()` case and have no
+ * {@see self::modelsResolveThroughSeam()}, {@see self::morphColumnsUseTheSeam()},
+ * {@see self::runtimeRequireIsWhitelisted()}, {@see self::noDebuggingLeftovers()},
+ * {@see self::modelsGoThroughTheFacade()}) register a token/reflection `it()` case and have no
  * fluent form at all.
  *
  * The gap is **stated rather than fixed**. `->ignoring()` is Pest's own method on an
@@ -417,6 +418,42 @@ final class ArchPresets
 
         return it('preset: '.$label, function () use ($srcDir, $ignoring): void {
             DebugLeftovers::assert($srcDir, $ignoring);
+        });
+    }
+
+    /**
+     * Model convenience methods and model traits reach behaviour through the **manager**,
+     * never straight through an action: no class or trait under `{$namespace}\Models`,
+     * `{$namespace}\Concerns` or `{$namespace}\Traits` may reference anything in
+     * `{$namespace}\Actions`. A trait that calls `app(LikePost::class)` is invisible to
+     * `Likes::fake()`, which swaps the manager — the fake then misses every call made through
+     * the model. See {@see ModelsThroughFacade}.
+     *
+     * ```php
+     * ArchPresets::modelsGoThroughTheFacade('RoundlyConsulting\Likes');
+     * ```
+     *
+     * **Non-vacuous:** if none of the three namespaces holds a class, the case fails — a package
+     * with no models or model traits must not call this preset. Scanned from source tokens, so
+     * an action named only in a docblock is not a violation.
+     *
+     * Exemptions go through `$ignoring` (class or namespace names, prefix-matched) and are pinned
+     * twice: {@see self::exemptionsExist()} fails a name that does not exist, and the case itself
+     * fails an entry that exempts no violating class.
+     *
+     * @param  list<string>  $ignoring  exemptions — pinned by {@see self::exemptionsExist()}
+     */
+    public static function modelsGoThroughTheFacade(string $namespace, array $ignoring = []): mixed
+    {
+        $namespace = trim($namespace, '\\');
+        $label = 'models go through the facade in '.$namespace;
+
+        if ($ignoring !== []) {
+            self::exemptionsExist($ignoring, $label);
+        }
+
+        return it('preset: '.$label, function () use ($namespace, $ignoring): void {
+            ModelsThroughFacade::assert($namespace, $ignoring);
         });
     }
 
