@@ -7,6 +7,7 @@ namespace RoundlyConsulting\Testing\Database;
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\Facades\DB;
+use InvalidArgumentException;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationRunner;
 
 /**
@@ -43,6 +44,16 @@ final class DriverMatrix
      * @var list<string>
      */
     private const array REAL_ENGINE_DRIVERS = ['pgsql', 'mysql'];
+
+    /**
+     * Every driver the matrix can build a connection for. Anything else is refused: an
+     * unknown name used to fall through to SQLite, so `TESTING_DB_DRIVER=postgres` (or
+     * `sqlsrv`) produced a "postgres" leg that ran on `:memory:` and skipped every pgsql-gated
+     * test green.
+     *
+     * @var list<string>
+     */
+    public const array DRIVERS = ['sqlite', 'pgsql', 'mysql', 'mariadb'];
 
     /**
      * The namespace the real-engine **probe** connections are isolated into: a dedicated
@@ -223,13 +234,26 @@ final class DriverMatrix
     }
 
     /**
-     * The active driver: `TESTING_DB_DRIVER`, defaulting to `sqlite`.
+     * The active driver: `TESTING_DB_DRIVER`, defaulting to `sqlite`. An unrecognised value
+     * throws — see {@see self::DRIVERS}.
      */
     public static function driver(): string
     {
         $driver = env('TESTING_DB_DRIVER');
 
-        return is_string($driver) && $driver !== '' ? $driver : 'sqlite';
+        if (! is_string($driver) || $driver === '') {
+            return 'sqlite';
+        }
+
+        if (! in_array($driver, self::DRIVERS, true)) {
+            throw new InvalidArgumentException(
+                "TESTING_DB_DRIVER={$driver} is not a driver the matrix knows (".implode(', ', self::DRIVERS).'). '
+                .'Refusing to fall back to SQLite: a leg named for another engine would run on :memory: and skip '
+                .'its engine-gated tests green. Fix the variable on the CI leg.',
+            );
+        }
+
+        return $driver;
     }
 
     /**
@@ -265,12 +289,15 @@ final class DriverMatrix
                 'charset' => 'utf8mb4',
                 'prefix' => '',
             ],
-            default => [
+            'sqlite' => [
                 'driver' => 'sqlite',
                 'database' => ':memory:',
                 'prefix' => '',
                 'foreign_key_constraints' => true,
             ],
+            default => throw new InvalidArgumentException(
+                "[{$driver}] is not a driver the matrix knows (".implode(', ', self::DRIVERS).').',
+            ),
         };
     }
 }

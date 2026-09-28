@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\DB;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationRunner;
 use RoundlyConsulting\Testing\Database\DriverMatrix;
 use RoundlyConsulting\Testing\Tests\Support\MinimalPackageTestCase;
+use Symfony\Component\Process\Process;
 
 uses(MinimalPackageTestCase::class);
 
@@ -169,3 +170,33 @@ it('runs the whole suite on postgres when TESTING_DB_DRIVER says so', function (
     expect(config('database.connections.testing.driver'))->toBe('pgsql')
         ->and(DB::connection('testing')->getPdo()->getAttribute(PDO::ATTR_DRIVER_NAME))->toBe('pgsql');
 })->skip(fn (): bool => DriverMatrix::driver() !== 'pgsql', 'pgsql driver leg only');
+
+// ---------------------------------------------------------------------------
+// An unrecognised driver is a configuration error, never a silent SQLite run.
+// ---------------------------------------------------------------------------
+
+it('refuses to build a config for a driver it does not know', function (string $driver): void {
+    expect(fn (): array => DriverMatrix::connectionConfig($driver))
+        ->toThrow(InvalidArgumentException::class, "[{$driver}]");
+})->with(['postgres', 'sqlsrv', 'SQLITE']);
+
+it('fails loudly when TESTING_DB_DRIVER names an unknown driver', function (): void {
+    // Laravel's env repository is immutable inside this process, so the variable is set on a
+    // child PHP process — the only honest way to observe what a CI leg exporting it gets.
+    $probe = fn (string $driver): Process => tap(new Process(
+        [PHP_BINARY, '-r', 'require "vendor/autoload.php"; echo RoundlyConsulting\Testing\Database\DriverMatrix::driver();'],
+        dirname(__DIR__, 2),
+        ['TESTING_DB_DRIVER' => $driver],
+    ))->run();
+
+    $typo = $probe('postgres');
+
+    // A "postgres" leg used to get sqlite `:memory:` and skip every pgsql-gated test green.
+    expect($typo->isSuccessful())->toBeFalse()
+        ->and($typo->getErrorOutput().$typo->getOutput())->toContain('TESTING_DB_DRIVER=postgres');
+
+    $known = $probe('pgsql');
+
+    expect($known->isSuccessful())->toBeTrue()
+        ->and($known->getOutput())->toBe('pgsql');
+});
