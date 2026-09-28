@@ -19,6 +19,8 @@ use RoundlyConsulting\Testing\PackageTestCase;
  *    SQLite. These tests need a driver that does *not* enforce foreign keys at DDL time,
  *    because that is exactly the driver against which the negative control must FAIL
  *    loudly. Pinning it here keeps that meaning on every leg.
+ *  - `sqlite_unreachable` — configured, never usable: the stand-in for an engine that is
+ *    down, which the negative control must refuse to count as a rejection.
  *
  * The inherited `pgsql` connection is present but unreachable off the postgres CI job, so
  * the pgsql self-tests skip *visibly* rather than passing vacuously.
@@ -37,6 +39,12 @@ class RealEngineTestCase extends PackageTestCase
     {
         return [
             'database.connections.sqlite_real' => DriverMatrix::connectionConfig('sqlite'),
+            // Configured but unreachable: the database file does not exist, so opening the
+            // connection throws — an engine that is down, without needing pgsql/mysql.
+            'database.connections.sqlite_unreachable' => [
+                ...DriverMatrix::connectionConfig('sqlite'),
+                'database' => __DIR__.'/../Fixtures/no-such-directory/database.sqlite',
+            ],
         ];
     }
 }

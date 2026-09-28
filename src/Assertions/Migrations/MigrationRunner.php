@@ -29,7 +29,15 @@ use Throwable;
  *
  * Migrations run with the default connection temporarily pointed at the target, so
  * the migrations' own `Schema::create()` calls land there; the connection is dropped
- * clean before and after every run and the previous default is always restored.
+ * clean before and after every run and the previous default is always restored — even
+ * when the run cannot start.
+ *
+ * Both entry points refuse an engine they cannot reach. An unreachable engine "rejects"
+ * everything, so without that guard the negative control passed on a Postgres that was
+ * down, over an order nobody had broken. For the same reason a rejection only counts when
+ * the engine refused for an **ordering** reason — a missing table/column or a foreign key it
+ * could not create (see {@see OrderingRejection}); a syntax error or a permission problem
+ * fails the same way in every order and proves nothing about this one.
  */
 final class MigrationRunner
 {
@@ -58,6 +66,8 @@ final class MigrationRunner
                 .'. Update the pin deliberately — do not let it drift.',
             );
         }
+
+        self::assertReachable($connection);
 
         try {
             self::runFiles($files, $connection, static function () use ($connection): void {
@@ -108,19 +118,31 @@ final class MigrationRunner
             'The $reorder closure must return a permutation of the migration files (the same files, reordered).',
         );
 
-        $rejected = false;
+        self::assertReachable($connection);
+
+        $rejection = null;
 
         try {
             self::runFiles($broken, $connection);
-        } catch (QueryException) {
-            $rejected = true;
+        } catch (QueryException $exception) {
+            $rejection = $exception;
         }
 
-        Assert::assertTrue(
-            $rejected,
+        Assert::assertNotNull(
+            $rejection,
             "The [{$connection}] engine ACCEPTED a deliberately broken migration order. That makes this a "
             .'vacuous negative control: a driver that does not enforce foreign keys (e.g. sqlite) cannot prove '
             .'the order matters. Run this assertion against pgsql or mysql.',
+        );
+
+        /** @var QueryException $rejection */
+        Assert::assertTrue(
+            OrderingRejection::recognises($rejection),
+            "The [{$connection}] engine refused the reordered set, but not an ordering error: "
+            .$rejection->getMessage()
+            ."\nOnly a missing table/column or a foreign key the engine could not create proves the order "
+            .'matters. An error the set hits in every order (bad SQL, permissions, a dropped connection) '
+            .'would make this negative control pass without testing the order at all.',
         );
     }
 
@@ -146,6 +168,22 @@ final class MigrationRunner
     }
 
     /**
+     * Fail — never skip, never count as a result — when the engine cannot be reached. The
+     * suite gates these assertions on {@see self::connectionIsAvailable()} to skip visibly;
+     * reaching this point without an engine means the gate is missing.
+     */
+    private static function assertReachable(string $connection): void
+    {
+        Assert::assertTrue(
+            self::connectionIsAvailable($connection),
+            "The [{$connection}] connection is not reachable, so there is no engine to apply or reject "
+            .'anything — any verdict here would be vacuous. Gate the test on '
+            .'MigrationRunner::connectionIsAvailable() (PackageTestCase::connectionAvailable()) so an '
+            .'engine-less run skips visibly instead.',
+        );
+    }
+
+    /**
      * @param  list<string>  $files
      * @param  Closure(): void|null  $inspect  run once every file has applied, while the
      *                                         schema is still live and before it is dropped
@@ -157,20 +195,25 @@ final class MigrationRunner
 
         $config->set('database.default', $connection);
 
-        DriverMatrix::prepareProbe($connection);
-
-        self::dropAllTables($connection);
-
+        // Preparing and clearing the probe sit inside the restore on purpose: when either
+        // throws, the default connection must still go back to what the suite had.
         try {
-            foreach ($files as $file) {
-                MigrationFiles::up($file);
-            }
+            DriverMatrix::prepareProbe($connection);
 
-            if ($inspect !== null) {
-                $inspect();
+            self::dropAllTables($connection);
+
+            try {
+                foreach ($files as $file) {
+                    MigrationFiles::up($file);
+                }
+
+                if ($inspect !== null) {
+                    $inspect();
+                }
+            } finally {
+                self::dropAllTables($connection);
             }
         } finally {
-            self::dropAllTables($connection);
             $config->set('database.default', $previousDefault);
         }
     }
