@@ -26,23 +26,49 @@ final class ConfigLeaves
      */
     public static function forFile(string $configPath, string $prefix): array
     {
+        $leaves = [];
+        self::flatten(self::load($configPath), $prefix, $leaves);
+
+        return array_values(array_unique($leaves));
+    }
+
+    /**
+     * The leaves whose shipped value is a non-null **scalar** — a string, number or bool.
+     * Nothing can live below one, so a read that reaches past it (`pkg.cache.store` under
+     * `'cache' => 'redis'`) is always `null`. Lists, empty arrays and `null` are not here:
+     * each is a legitimate placeholder a host can fill with more structure.
+     *
+     * @return list<string>
+     */
+    public static function scalarsForFile(string $configPath, string $prefix): array
+    {
+        $leaves = [];
+        $scalars = [];
+        self::flatten(self::load($configPath), $prefix, $leaves, $scalars);
+
+        return array_values(array_unique($scalars));
+    }
+
+    /**
+     * @return array<array-key, mixed>
+     */
+    private static function load(string $configPath): array
+    {
         Assert::assertFileExists($configPath, "Config file does not exist: {$configPath}");
 
         $config = require $configPath;
 
         Assert::assertIsArray($config, "Config file {$configPath} must return an array.");
 
-        $leaves = [];
-        self::flatten($config, $prefix, $leaves);
-
-        return array_values(array_unique($leaves));
+        return $config;
     }
 
     /**
      * @param  array<array-key, mixed>  $node
      * @param  list<string>  $leaves
+     * @param  list<string>  $scalars
      */
-    private static function flatten(array $node, string $path, array &$leaves): void
+    private static function flatten(array $node, string $path, array &$leaves, array &$scalars = []): void
     {
         if ($node === [] || ! self::isAssociative($node)) {
             $leaves[] = $path;
@@ -54,12 +80,16 @@ final class ConfigLeaves
             $childPath = $path.'.'.$key;
 
             if (is_array($value)) {
-                self::flatten($value, $childPath, $leaves);
+                self::flatten($value, $childPath, $leaves, $scalars);
 
                 continue;
             }
 
             $leaves[] = $childPath;
+
+            if (is_scalar($value)) {
+                $scalars[] = $childPath;
+            }
         }
     }
 

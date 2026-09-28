@@ -52,6 +52,7 @@ final class ConfigContract
         $reverse = $options['reverse'] ?? true;
 
         $shipped = ConfigLeaves::forFile($configPath, $prefix);
+        $scalars = ConfigLeaves::scalarsForFile($configPath, $prefix);
 
         $scraper = new TokenScraper($prefix, $extraReadPrefixes);
 
@@ -99,7 +100,7 @@ final class ConfigContract
         // share one sound read-set, which is exactly why both of them can be reported.
         self::assertNoInterpolations($interpolations, $prefix);
 
-        $report = self::forwardProblems($readsAll, $shipped, $allowUnshipped, $prefix, $origins);
+        $report = self::forwardProblems($readsAll, $shipped, $scalars, $allowUnshipped, $prefix, $origins);
 
         if ($reverse) {
             $report = array_merge(
@@ -109,7 +110,7 @@ final class ConfigContract
             );
         }
 
-        $report = array_merge($report, self::staleAllowUnshipped($allowUnshipped, $readsAll, $shipped));
+        $report = array_merge($report, self::staleAllowUnshipped($allowUnshipped, $readsAll, $shipped, $scalars));
 
         Assert::assertSame(
             [],
@@ -155,18 +156,23 @@ final class ConfigContract
      * only that the key was unshipped, and diagnosing it took hours. Naming the file and the
      * reason turns that into seconds.
      *
+     * A read *below* a shipped scalar leaf is reported here too, with the leaf that stops it:
+     * `config('pkg.cache.store')` under `'cache' => 'redis'` is always `null`, and used to pass
+     * because the forward check only compared the common prefix.
+     *
      * @param  list<string>  $readsAll
      * @param  list<string>  $shipped
+     * @param  list<string>  $scalars  the shipped leaves nothing can live below
      * @param  list<string>  $allowUnshipped
      * @param  array<string, list<string>>  $origins
      * @return list<string>
      */
-    private static function forwardProblems(array $readsAll, array $shipped, array $allowUnshipped, string $prefix, array $origins): array
+    private static function forwardProblems(array $readsAll, array $shipped, array $scalars, array $allowUnshipped, string $prefix, array $origins): array
     {
         $missing = [];
 
         foreach ($readsAll as $read) {
-            if (! self::coveredForward($read, $shipped) && ! in_array($read, $allowUnshipped, true)) {
+            if (! self::coveredForward($read, $shipped, $scalars) && ! in_array($read, $allowUnshipped, true)) {
                 $missing[] = $read;
             }
         }
@@ -178,7 +184,12 @@ final class ConfigContract
         sort($missing);
 
         $lines = array_map(
-            static fn (string $key): string => "  - {$key}  [read in ".implode(', ', array_unique($origins[$key] ?? ['?'])).']',
+            static function (string $key) use ($origins, $scalars): string {
+                $line = "  - {$key}  [read in ".implode(', ', array_unique($origins[$key] ?? ['?'])).']';
+                $stop = self::scalarAbove($key, $scalars);
+
+                return $stop === null ? $line : $line." (below the scalar leaf {$stop} — always null)";
+            },
             $missing,
         );
 
@@ -302,14 +313,15 @@ final class ConfigContract
      * @param  list<string>  $allowUnshipped
      * @param  list<string>  $readsAll
      * @param  list<string>  $shipped
+     * @param  list<string>  $scalars
      * @return list<string>
      */
-    private static function staleAllowUnshipped(array $allowUnshipped, array $readsAll, array $shipped): array
+    private static function staleAllowUnshipped(array $allowUnshipped, array $readsAll, array $shipped, array $scalars): array
     {
         $stale = [];
 
         foreach ($allowUnshipped as $entry) {
-            if (! in_array($entry, $readsAll, true) || self::coveredForward($entry, $shipped)) {
+            if (! in_array($entry, $readsAll, true) || self::coveredForward($entry, $shipped, $scalars)) {
                 $stale[] = "Stale allowUnshipped entry '{$entry}': it is not a read-but-unshipped key. Remove it.";
             }
         }
@@ -323,17 +335,43 @@ final class ConfigContract
      * when some `pkg.providers.<driver>.url` is, and a typo'd `pkg.providers.*.urls` is not.
      * That is what checks a `sectionVariables` base path rather than trusting it.
      *
+     * Reaching *into* a leaf counts only when the leaf can hold more than it ships — a list,
+     * an empty map, a `null` placeholder. Below a scalar there is nothing to read.
+     *
      * @param  list<string>  $shipped
+     * @param  list<string>  $scalars
      */
-    private static function coveredForward(string $read, array $shipped): bool
+    private static function coveredForward(string $read, array $shipped, array $scalars = []): bool
     {
         foreach ($shipped as $leaf) {
-            if (KeyPattern::sharesPath($read, $leaf)) {
-                return true;
+            if (! KeyPattern::sharesPath($read, $leaf)) {
+                continue;
             }
+
+            if (substr_count($read, '.') > substr_count($leaf, '.') && in_array($leaf, $scalars, true)) {
+                continue;
+            }
+
+            return true;
         }
 
         return false;
+    }
+
+    /**
+     * The shipped scalar leaf a read reaches below, if any — named in the forward finding.
+     *
+     * @param  list<string>  $scalars
+     */
+    private static function scalarAbove(string $read, array $scalars): ?string
+    {
+        foreach ($scalars as $leaf) {
+            if (substr_count($read, '.') > substr_count($leaf, '.') && KeyPattern::sharesPath($read, $leaf)) {
+                return $leaf;
+            }
+        }
+
+        return null;
     }
 
     /**

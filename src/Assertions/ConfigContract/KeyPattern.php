@@ -57,7 +57,9 @@ final class KeyPattern
     /**
      * True when $read and $leaf lie on the same path — either may be the deeper one. This is
      * the forward direction's tolerance: naming a parent (`config('pkg.rp')`) or reaching
-     * into a leaf (`config('pkg.rp.id.extra')`) both count as shipped.
+     * into a leaf (`config('pkg.guards.web')` under a shipped `'guards' => []`) both lie on
+     * a shipped path. {@see ConfigContract} narrows the second case: below a *scalar* leaf
+     * nothing can live, so it does not count as shipped.
      */
     public static function sharesPath(string $read, string $leaf): bool
     {

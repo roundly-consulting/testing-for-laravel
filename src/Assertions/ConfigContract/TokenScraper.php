@@ -15,14 +15,28 @@ namespace RoundlyConsulting\Testing\Assertions\ConfigContract;
  * such a comment and stayed green with the fix reverted; the tokenizer cannot be.
  *
  * What counts as a read:
- *   - a literal string argument to `config('pkg.…')` / `Config::get('pkg.…')`;
+ *   - a literal string argument to `config('pkg.…')` / `\config('pkg.…')` /
+ *     `Config::get('pkg.…')` — the facade bare, fully-qualified, as `\Config`, or under an
+ *     import alias;
  *   - a literal string argument to a read method on an **injected config repository** —
  *     `$this->config->get('pkg.…')`, `$config->string('pkg.…')` (see below);
+ *   - a literal string argument to a read method on the repository reached through an
+ *     **expression** — `config()->string('pkg.…')`, `app('config')->get('pkg.…')`,
+ *     `app(Repository::class)->…`, `resolve('config')->…`, `->make('config')->…`,
+ *     `$app['config']->…`;
+ *   - every literal key of an array handed to a read method (`->get(['pkg.a' => $default])`,
+ *     Laravel's `getMany`) — while an array handed to the `config()` helper is a **write**
+ *     (`config(['pkg.x' => true])`) and is skipped rather than reported as unresolvable;
  *   - a `$var['key']` or `$this->prop['key']` array-offset read where the receiver is mapped
  *     to a base path via `sectionVariables` (a package that hands its whole config array to
  *     a DTO reads keys by offset, not through `config()`);
  *   - any literal string under one of `extraReadPrefixes`, wherever it appears
  *     (e.g. `ModelResolver::for('pkg.model')` — not a `config()` call).
+ *
+ * A `.blade.php` file is scraped through {@see BladeSource}: its echoes, directive arguments,
+ * component bindings and PHP blocks are read as PHP; its markup, comments, escaped echoes and
+ * `@verbatim` blocks are not. Tokenized raw, a view is one `T_INLINE_HTML` token and every read
+ * in it was invisible.
  *
  * ## Driver-keyed reads
  *
@@ -104,22 +118,44 @@ final class TokenScraper
      */
     public function scrape(string $file, array $sectionVariables = []): ScrapedFile
     {
-        $tokens = $this->meaningfulTokens((string) file_get_contents($file));
+        $source = (string) file_get_contents($file);
+
+        if (str_ends_with(strtolower($file), '.blade.php')) {
+            $source = BladeSource::toPhp($source);
+        }
+
+        $tokens = $this->meaningfulTokens($source);
 
         $reads = [];
         $interpolations = [];
         $dynamicSections = [];
         $prefixedReads = [];
 
-        $repositories = $this->configRepositoryNames($tokens);
+        $imports = $this->imports($tokens);
+        $repositories = $this->configRepositoryNames($tokens, $imports);
 
         $count = count($tokens);
 
         for ($i = 0; $i < $count; $i++) {
             [$id, $text] = $tokens[$i];
 
-            if ($this->opensConfigCall($tokens, $i) || $this->opensRepositoryRead($tokens, $i, $repositories)) {
+            $helper = $this->opensConfigHelper($tokens, $i);
+
+            if ($helper || $this->opensFacadeRead($tokens, $i, $imports) || $this->opensRepositoryRead($tokens, $i, $repositories, $imports)) {
                 $argument = $this->captureFirstArgument($tokens, $i + 1);
+
+                if ($this->isArrayArgument($argument)) {
+                    // `config([...])` SETS keys — a write proves nothing is consumed. The same
+                    // array handed to a read method is `getMany()`: each literal key is a read.
+                    if (! $helper) {
+                        foreach ($this->arrayKeys($argument) as $key) {
+                            $this->classifyArgument([$key], $reads, $interpolations, $dynamicSections);
+                        }
+                    }
+
+                    continue;
+                }
+
                 $this->classifyArgument($argument, $reads, $interpolations, $dynamicSections);
 
                 continue;
@@ -185,38 +221,53 @@ final class TokenScraper
     }
 
     /**
-     * True when the token at $i begins a `config(` or `Config::get(` call — and is a
-     * real call, not a `$this->config` property or a `Something::config` reference.
+     * True when the token at $i is the `config(` helper — bare or fully-qualified — and a real
+     * call: not a `$this->config` property, a `Something::config` reference, a `function config`
+     * declaration or a `new config` instantiation.
      *
      * @param  list<array{0: int|null, 1: string}>  $tokens
      */
-    private function opensConfigCall(array $tokens, int $i): bool
+    private function opensConfigHelper(array $tokens, int $i): bool
     {
-        [$id, $text] = $tokens[$i];
+        if (! $this->isFunctionName($tokens[$i], 'config')) {
+            return false;
+        }
+
         $next = $tokens[$i + 1] ?? null;
 
-        if ($id === T_STRING && $text === 'config') {
-            $prev = $tokens[$i - 1] ?? null;
+        return $next !== null && $next[1] === '(' && $this->isGlobalCall($tokens, $i);
+    }
 
-            if ($prev !== null && in_array($prev[0], [T_OBJECT_OPERATOR, T_NULLSAFE_OBJECT_OPERATOR, T_DOUBLE_COLON, T_FUNCTION], true)) {
-                return false;
-            }
+    /**
+     * True when the token at $i is a read method called statically on the `Config` facade:
+     * `Config::get(`, `\Config::string(`, `\Illuminate\Support\Facades\Config::get(`, or an
+     * import alias of the facade (`use Illuminate\Support\Facades\Config as Settings;`).
+     *
+     * A bare `Config` counts whatever it is imported as — the fleet's own
+     * `PackageToolkit\Support\Config` helpers read keys by their first argument the same way.
+     *
+     * @param  list<array{0: int|null, 1: string}>  $tokens
+     * @param  array<string, string>  $imports
+     */
+    private function opensFacadeRead(array $tokens, int $i, array $imports): bool
+    {
+        [$id, $text] = $tokens[$i];
 
-            return $next !== null && $next[1] === '(';
+        if ($id !== T_STRING || ! in_array($text, self::READ_METHODS, true)) {
+            return false;
         }
 
-        // `Config::get('pkg.…')` and the rest of the facade's read family — the same methods
-        // an injected repository exposes, reached statically.
-        if ($id === T_STRING && in_array($text, self::READ_METHODS, true)) {
-            $prev = $tokens[$i - 1] ?? null;
-            $prevPrev = $tokens[$i - 2] ?? null;
+        $next = $tokens[$i + 1] ?? null;
+        $colons = $tokens[$i - 1] ?? null;
+        $class = $tokens[$i - 2] ?? null;
 
-            return $next !== null && $next[1] === '('
-                && $prev !== null && $prev[0] === T_DOUBLE_COLON
-                && $prevPrev !== null && $prevPrev[0] === T_STRING && $prevPrev[1] === 'Config';
+        if ($next === null || $next[1] !== '(' || $colons === null || $colons[0] !== T_DOUBLE_COLON || $class === null
+            || ! in_array($class[0], [T_STRING, T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED], true)) {
+            return false;
         }
 
-        return false;
+        return $class[1] === 'Config'
+            || in_array($this->resolveName($class[1], $imports), ['Illuminate\Support\Facades\Config', 'Config'], true);
     }
 
     /**
@@ -225,13 +276,17 @@ final class TokenScraper
      * config `Repository`.
      *
      * Both shapes reduce to the same question: the name immediately left of `->method(` must
-     * be a known repository. Like {@see self::opensConfigCall()}, this reports the index of
+     * be a known repository. Like {@see self::opensConfigHelper()}, this reports the index of
      * the method name, so the caller's `$i + 1` is the opening paren either way.
+     *
+     * The receiver may also be an **expression** that yields the repository — see
+     * {@see self::yieldsConfigRepository()}.
      *
      * @param  list<array{0: int|null, 1: string}>  $tokens
      * @param  list<string>  $repositories  names (no leading `$`) bound to a config repository
+     * @param  array<string, string>  $imports
      */
-    private function opensRepositoryRead(array $tokens, int $i, array $repositories): bool
+    private function opensRepositoryRead(array $tokens, int $i, array $repositories, array $imports): bool
     {
         [$id, $text] = $tokens[$i];
 
@@ -257,6 +312,11 @@ final class TokenScraper
             return false;
         }
 
+        // `config()->get(`, `app('config')->get(`, `$app['config']->get(` — an expression.
+        if (in_array($receiver[1], [')', ']'], true)) {
+            return $this->yieldsConfigRepository($tokens, $i - 2, $imports);
+        }
+
         // `$config->get(` — a local variable or a promoted parameter inside its constructor.
         if ($receiver[0] === T_VARIABLE) {
             return in_array(ltrim($receiver[1], '$'), $repositories, true);
@@ -277,6 +337,189 @@ final class TokenScraper
     }
 
     /**
+     * Whether the expression closing at $close (a `)` or `]`) evaluates to the config
+     * repository:
+     *
+     *  - `config()` / `\config()` with no argument;
+     *  - `app(X)` / `resolve(X)` (bare or fully-qualified) where X names the repository —
+     *    the `'config'` binding, or `Repository::class` resolving to a config repository;
+     *  - `->make(X)` / `::make(X)` with the same X — `app()->make()`, `App::make()`,
+     *    `Container::getInstance()->make()`, `$this->app->make()`;
+     *  - `[...]['config']` — `$app['config']`, `$this->app['config']`, `app()['config']`.
+     *
+     * Anything else is some other object, and its `->get()` is not a config read — the same
+     * line {@see self::configRepositoryNames()} draws for variables, drawn for expressions.
+     *
+     * @param  list<array{0: int|null, 1: string}>  $tokens
+     * @param  array<string, string>  $imports
+     */
+    private function yieldsConfigRepository(array $tokens, int $close, array $imports): bool
+    {
+        $opener = $tokens[$close][1] === ')' ? '(' : '[';
+        $open = $this->matchingOpen($tokens, $close, $opener, $tokens[$close][1]);
+
+        if ($open === null) {
+            return false;
+        }
+
+        $inner = array_slice($tokens, $open + 1, $close - $open - 1);
+
+        if ($opener === '[') {
+            return count($inner) === 1 && $inner[0][0] === T_CONSTANT_ENCAPSED_STRING
+                && $this->stringValue($inner[0][1]) === 'config';
+        }
+
+        $callee = $tokens[$open - 1] ?? null;
+
+        if ($callee === null) {
+            return false;
+        }
+
+        if ($this->isFunctionName($callee, 'config')) {
+            return $inner === [] && $this->isGlobalCall($tokens, $open - 1);
+        }
+
+        if ($this->isFunctionName($callee, 'app') || $this->isFunctionName($callee, 'resolve')) {
+            return $this->isGlobalCall($tokens, $open - 1) && $this->namesConfigRepository($inner, $imports);
+        }
+
+        $before = $tokens[$open - 2] ?? null;
+
+        return $callee[0] === T_STRING && $callee[1] === 'make'
+            && $before !== null && in_array($before[0], [T_OBJECT_OPERATOR, T_NULLSAFE_OBJECT_OPERATOR, T_DOUBLE_COLON], true)
+            && $this->namesConfigRepository($inner, $imports);
+    }
+
+    /**
+     * Whether a container argument names the config repository: the `'config'` binding or a
+     * `Repository::class` that resolves (through the imports) to one.
+     *
+     * @param  list<array{0: int|null, 1: string}>  $argument
+     * @param  array<string, string>  $imports
+     */
+    private function namesConfigRepository(array $argument, array $imports): bool
+    {
+        if (count($argument) === 1 && $argument[0][0] === T_CONSTANT_ENCAPSED_STRING) {
+            return $this->stringValue($argument[0][1]) === 'config';
+        }
+
+        return count($argument) === 3
+            && in_array($argument[0][0], [T_STRING, T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED], true)
+            && $argument[1][0] === T_DOUBLE_COLON
+            && strtolower($argument[2][1]) === 'class'
+            && in_array($this->resolveName($argument[0][1], $imports), self::CONFIG_REPOSITORIES, true);
+    }
+
+    /**
+     * The index of the bracket opening the one that closes at $close, or null if unbalanced.
+     *
+     * @param  list<array{0: int|null, 1: string}>  $tokens
+     */
+    private function matchingOpen(array $tokens, int $close, string $open, string $closer): ?int
+    {
+        $depth = 0;
+
+        for ($j = $close; $j >= 0; $j--) {
+            if ($tokens[$j][1] === $closer) {
+                $depth++;
+            } elseif ($tokens[$j][1] === $open) {
+                $depth--;
+
+                if ($depth === 0) {
+                    return $j;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether a token is the global function `$name`, bare or fully-qualified.
+     *
+     * @param  array{0: int|null, 1: string}  $token
+     */
+    private function isFunctionName(array $token, string $name): bool
+    {
+        return ($token[0] === T_STRING && $token[1] === $name)
+            || ($token[0] === T_NAME_FULLY_QUALIFIED && $token[1] === '\\'.$name);
+    }
+
+    /**
+     * Whether the name at $i is called as a global function — not a method (`->config(`,
+     * `::config(`), a declaration (`function config(`) or an instantiation (`new config(`).
+     *
+     * @param  list<array{0: int|null, 1: string}>  $tokens
+     */
+    private function isGlobalCall(array $tokens, int $i): bool
+    {
+        $prev = $tokens[$i - 1] ?? null;
+
+        return $prev === null
+            || ! in_array($prev[0], [T_OBJECT_OPERATOR, T_NULLSAFE_OBJECT_OPERATOR, T_DOUBLE_COLON, T_FUNCTION, T_NEW], true);
+    }
+
+    /**
+     * @param  list<array{0: int|null, 1: string}>  $argument
+     */
+    private function isArrayArgument(array $argument): bool
+    {
+        $first = $argument[0] ?? null;
+
+        return $first !== null && ($first[1] === '[' || $first[0] === T_ARRAY);
+    }
+
+    /**
+     * The literal keys of an array argument: each element of a list, each key of a map.
+     *
+     * @param  list<array{0: int|null, 1: string}>  $argument
+     * @return list<array{0: int|null, 1: string}>
+     */
+    private function arrayKeys(array $argument): array
+    {
+        $keys = [];
+        $depth = 0;
+        $elementStart = true;
+
+        foreach ($argument as $index => $token) {
+            if (in_array($token[1], ['(', '[', '{'], true)) {
+                $depth++;
+
+                continue;
+            }
+
+            if (in_array($token[1], [')', ']', '}'], true)) {
+                $depth--;
+
+                continue;
+            }
+
+            if ($depth !== 1) {
+                continue;
+            }
+
+            if ($token[1] === ',') {
+                $elementStart = true;
+
+                continue;
+            }
+
+            if ($elementStart && $token[0] === T_CONSTANT_ENCAPSED_STRING) {
+                $after = $argument[$index + 1] ?? null;
+
+                // A lone literal element, or the key of `'k' => $default`.
+                if ($after === null || in_array($after[1], [',', ']', ')'], true) || $after[0] === T_DOUBLE_ARROW) {
+                    $keys[] = $token;
+                }
+            }
+
+            $elementStart = false;
+        }
+
+        return $keys;
+    }
+
+    /**
      * Every name in the file bound to a config repository by a **declared type** — promoted
      * constructor properties (`private readonly Repository $config`), plain properties, and
      * method parameters alike. Returned without the leading `$`, so one set answers for both
@@ -289,11 +532,11 @@ final class TokenScraper
      * really is dead.
      *
      * @param  list<array{0: int|null, 1: string}>  $tokens
+     * @param  array<string, string>  $imports
      * @return list<string>
      */
-    private function configRepositoryNames(array $tokens): array
+    private function configRepositoryNames(array $tokens, array $imports): array
     {
-        $imports = $this->imports($tokens);
         $names = [];
         $count = count($tokens);
 

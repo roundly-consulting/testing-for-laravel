@@ -366,3 +366,66 @@ it('stops at a non-literal offset rather than guessing', function (): void {
         sectionVariables: ['$rl' => 'shop.rate_limiters'],
     )['reads'])->toBe(['shop.rate_limiters.public']);
 });
+
+// ---------------------------------------------------------------------------
+// Spellings of the same read that used to be invisible.
+// ---------------------------------------------------------------------------
+
+it('reads the fully-qualified helper and facade', function (): void {
+    expect(scrapeSource("\\config('shop.a'); \\Illuminate\\Support\\Facades\\Config::get('shop.b'); \\Config::integer('shop.c');")['reads'])
+        ->toBe(['shop.a', 'shop.b', 'shop.c']);
+});
+
+it('reads through an import alias of the facade, and not through an unrelated class', function (): void {
+    $source = "use Illuminate\\Support\\Facades\\Config as Settings;\nuse App\\Cache as Store;\nSettings::get('shop.a'); Store::get('shop.b');";
+
+    expect(scrapeSource($source)['reads'])->toBe(['shop.a']);
+});
+
+it('does not read a method, a declaration or an instantiation named config', function (): void {
+    expect(scrapeSource("\$x->config('shop.a'); Foo::config('shop.b'); new config('shop.c'); function config(\$k) {}")['reads'])->toBe([]);
+});
+
+it('reads through the repository returned by an expression', function (string $call): void {
+    expect(scrapeSource("use Illuminate\\Contracts\\Config\\Repository;\n{$call}")['reads'])->toBe(['shop.k']);
+})->with([
+    "config()->string('shop.k');",
+    "\\config()?->get('shop.k');",
+    "app('config')->get('shop.k');",
+    "\\app(Repository::class)->get('shop.k');",
+    "resolve('config')->get('shop.k');",
+    "app()->make('config')->get('shop.k');",
+    "App::make('config')->get('shop.k');",
+    "\$this->app['config']->get('shop.k');",
+    "app()['config']->get('shop.k');",
+]);
+
+it('does not read through an expression that yields some other service', function (string $call): void {
+    expect(scrapeSource("use Illuminate\\Cache\\Repository;\n{$call}")['reads'])->toBe([]);
+})->with([
+    "config('other.x')->get('shop.k');",
+    "app('cache')->get('shop.k');",
+    "app(Repository::class)->get('shop.k');",
+    "\$this->app['cache']->get('shop.k');",
+    "make('config')->get('shop.k');",
+    "\$x->app('config')->get('shop.k');",
+    "(\$factory)->get('shop.k');",
+    "\$items[0]->get('shop.k');",
+]);
+
+it('treats an array handed to the helper as a write, and to a read method as getMany', function (): void {
+    expect(scrapeSource("config(['shop.a' => true]); config(array('shop.b' => 1));")['reads'])->toBe([])
+        ->and(scrapeSource("config()->get(['shop.c', 'shop.d' => 'fallback', 'other.e']);")['reads'])->toBe(['shop.c', 'shop.d'])
+        ->and(scrapeSource("config(['shop.a' => true]);")['interpolations'])->toBe([]);
+});
+
+it('reads a Blade view through its PHP-bearing constructs only', function (): void {
+    $file = (string) tempnam(sys_get_temp_dir(), 'view').'.blade.php';
+    file_put_contents($file, "{{-- config('shop.comment') --}}\n<p>It's {{ config('shop.a') }}</p>\n@@if(config('shop.escaped_directive'))\n@if(config('shop.b'))@endif");
+
+    try {
+        expect((new TokenScraper('shop'))->scrape($file)->reads)->toBe(['shop.a', 'shop.b']);
+    } finally {
+        @unlink($file);
+    }
+});
