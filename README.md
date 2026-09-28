@@ -64,7 +64,7 @@ declare(strict_types=1);
 
 use RoundlyConsulting\Testing\Expectations\Expectations;
 
-uses(RoundlyConsulting\Passkeys\Tests\TestCase::class)->in('Feature', 'Unit');
+uses(RoundlyConsulting\Passkeys\Tests\TestCase::class)->in('Arch', 'Feature', 'Unit');
 
 Expectations::register(); // idempotent — a no-op if the Pest plugin already ran
 ```
@@ -75,7 +75,11 @@ internal flag, so calling both is safe.
 ## The migration-order pin
 
 ```php
-expect($migrationsDir)->toHaveRunnableMigrationOrder(?int $foreignKeys = null, array $tableResolvers = []);
+expect($migrationsDir)->toHaveRunnableMigrationOrder(
+    ?int $foreignKeys = null,
+    array $tableResolvers = [],
+    array $externalTables = [],
+);
 ```
 
 Parses the foreign keys out of your migration **source** and asserts every referenced
@@ -89,13 +93,41 @@ it('has a runnable migration order', function (): void {
 
 **Bug it prevents:** an uninstallable migration order hidden by a **green SQLite suite** —
 SQLite happily creates a table that points at a missing parent and only complains at insert
-time, so of the usual order checks only a structural one goes red there. It understands every
-common FK form — `->constrained('table')`, bare `->constrained()` (parent derived from the
-column), long-hand `->references('id')->on('table')`, and `->constrained(Class::method())` via
-`tableResolvers` — pins that a `Schema::table()` ALTER sorts after its CREATE and that a
-self-referencing key sorts with its own migration. An unparseable
-declaration **fails** rather than being silently dropped, and `foreignKeys:` pins the edge
-count so the check can never pass over an empty parse.
+time, so of the usual order checks only a structural one goes red there. It pins that every
+foreign-key target is created first, that a `Schema::table()` ALTER runs after its CREATE,
+and that a self-referencing key sorts with its own table.
+
+Order is tracked per `Schema::create()`/`Schema::table()` **block**, not per file: a
+migration that creates `teams` and then `team_members` (constrained onto `teams`) is
+runnable; the same two blocks the other way round are not.
+
+These foreign-key forms are understood:
+
+| Form | Parent table |
+|---|---|
+| `->constrained('users')`, `->constrained('users', 'id')`, `->constrained(table: 'users')` | the named table (positional or named argument) |
+| bare `->constrained()`, `->constrained(null, 'id')`, `->constrained(column: 'uuid')` | derived from the column, as Laravel does: `foreignId('author_id')` → `authors`, `foreignUuid('owner_uuid')->constrained(column: 'uuid')` → `owners` |
+| `->foreignIdFor(Author::class)->constrained()` | the model's own `getTable()` (resolved through the file's `use` imports, so a model with a custom `$table` resolves correctly) |
+| `->references('id')->on('users')` | the `on()` table |
+| any non-literal — `->constrained($table)`, `Schema::create(Model::table(), …)`, `foreignIdFor($model)` | mapped through `tableResolvers: ['$table' => 'users']`; an unmapped one **fails** rather than guessing |
+
+Commented-out declarations are ignored. An unparseable declaration **fails** rather than
+being silently dropped, and `foreignKeys:` pins the edge count so the check can never pass
+over an empty parse.
+
+**Tables the set does not own.** A package migration that constrains onto the host app's
+`users`, or an app migration that alters a table a vendor package created, references a table
+no file in the directory creates. Declare it:
+
+```php
+expect(__DIR__.'/../../database/migrations')->toHaveRunnableMigrationOrder(
+    foreignKeys: 3,
+    externalTables: ['users'],
+);
+```
+
+Each `externalTables` entry is rot-checked: it must be referenced by some key or ALTER, and
+the set must not create it.
 
 ### Real-engine runner and its negative control
 
@@ -125,6 +157,13 @@ it('rejects a broken order on postgres', function (): void {
 control — it passes only if the engine refuses the reordered set, and **fails loudly** if
 the engine accepts it (a driver that does not enforce foreign keys, like SQLite, makes the
 check vacuous).
+
+A refusal only counts when it is an **ordering** error: a missing table or column, or a
+foreign key the engine could not create. A set that fails in every order (invalid SQL, a
+permission error) fails the negative control instead of passing it. Both assertions also
+**fail** on an engine they cannot reach — "connection refused" used to read as "the engine
+rejected the order" — so gate them as shown above rather than relying on the engine to be up.
+The default connection is restored after every run, including one that could not start.
 
 `toApplyOnConnection` guards itself twice: optional `migrations:` pins the file count so the
 check cannot pass over an empty or relocated directory, and a set that applies without
@@ -199,7 +238,9 @@ expect(PasskeysServiceProvider::class)->toPublishMigrationsTimestamped('passkeys
 **Bug it prevents:** Roundly packages publish migrations timestamped rather than auto-loading
 them; doing both runs both copies — a duplicate-table failure.
 These two expectations only make sense against a package service provider, so they are
-**package-only** — an app has no provider to point them at.
+**package-only** — an app has no provider to point them at. The provider must be registered
+in the test's app (`packageProviders()`): `toNotAutoLoadMigrations` **fails** on a provider
+that never booted, which could not have registered anything and would pass for free.
 
 ## The config-key contract
 
@@ -217,11 +258,28 @@ expect(config_path('passkeys.php'))->toSatisfyConfigContract(__DIR__.'/../../src
 ]);
 ```
 
-Reads are counted from `config('pkg.key')`, `Config::get('pkg.key')`, **an injected
-`Illuminate\Contracts\Config\Repository`** (`$this->config->get('pkg.key')`, and the
-`string()`/`integer()`/`boolean()`/`array()` family), and `sectionVariables` array offsets.
-The repository binding is resolved from the **declared type**, so a `$cache->get('pkg.x')`
-on a cache repository is correctly not a config read.
+Reads are counted from (with the `get()`/`has()`/`string()`/`integer()`/`boolean()`/`float()`/
+`array()`/`collection()` family wherever a method is called):
+
+- the helper — `config('pkg.key')`, `\config('pkg.key')`;
+- the facade — `Config::get('pkg.key')`, `\Config::get(…)`,
+  `\Illuminate\Support\Facades\Config::get(…)`, or the facade under an import alias;
+- **an injected `Illuminate\Contracts\Config\Repository`** — `$this->config->get('pkg.key')`;
+- the repository reached through an expression — `config()->string('pkg.key')`,
+  `app('config')->get(…)`, `app(Repository::class)->get(…)`, `resolve('config')->…`,
+  `->make('config')->…`, `$app['config']->…`;
+- each literal key of an array handed to a read method (`->get(['pkg.a' => $default])`);
+- `sectionVariables` array offsets.
+
+The repository binding is resolved from the **declared type** (or the `'config'` binding the
+expression names), so a `$cache->get('pkg.x')` or `app('cache')->get('pkg.x')` is correctly
+not a config read. An array handed to the **helper** — `config(['pkg.x' => true])` — is a
+runtime *write*: it is skipped, never counted as a read and never reported as unresolvable.
+
+Forward, a read must land on a shipped path: naming a parent (`config('pkg.rp')`) is fine,
+and so is reading into a leaf that can hold more than it ships — a list, an empty map, a
+`null` placeholder. Reading **below a scalar** is not: with `'cache' => 'redis'` shipped,
+`config('pkg.cache.store')` is always `null`, and the forward finding says so.
 
 `sectionVariables` follows offsets to **any depth**: with `['$rl' => 'pkg.rate_limiters']`,
 `$rl['public']['enabled']` counts as a read of `pkg.rate_limiters.public.enabled`. It maps a
@@ -236,10 +294,10 @@ Each `$srcDirs` entry is scanned, **plus its sibling `database/` and `routes/`**
 exist (migrations, factories, and route files all read config). Nothing else.
 
 **That scope is finite, so a REVERSE finding means "no reader *in the scanned directories*" —
-never "no reader anywhere".** A key read from a Blade view, from a directory you did not pass,
-or from the host app scrapes as unread and is reported identically to a genuinely dead one. The
-failure message therefore **prints the directories it searched**; read that list before acting
-on a finding.
+never "no reader anywhere".** A key read from a Blade view you did not pass, from another
+directory you did not pass, or from the host app scrapes as unread and is reported identically
+to a genuinely dead one. The failure message therefore **prints the directories it searched**;
+read that list before acting on a finding.
 
 This is a real gap, documented rather than papered over. It has bitten: `git.webhooks.middleware`
 was reported as a key "nothing reads" while `routes/git-webhooks.php` read it — deleting it as
@@ -255,6 +313,12 @@ expect(config_path('media.php'))->toSatisfyConfigContract([
     __DIR__.'/../../resources/views',   // a directory the default scope misses
 ]);
 ```
+
+A `.blade.php` file is read through the parts of it Blade runs as PHP — `{{ … }}` and
+`{!! … !!}` echoes, `@directive( … )` arguments, `@php … @endphp` and `<?php … ?>` blocks, and
+`:attribute="…"` bindings on `<x-…>` component tags. `{{-- comments --}}`, `@{{ escaped }}`
+echoes, `@@directive` escapes and `@verbatim` blocks are not reads, and markup is never
+tokenized, so `{{ config('media.max_file_size') }}` in a view counts once its directory is passed.
 
 Reach for `allowUnread` only when the key is genuinely unread **or** unmappable by the scraper —
 never to silence a key you know is read from an unscanned directory. `allowUnread` asserts the
@@ -352,6 +416,12 @@ vacuous, and a leak slips through unless a positive assertion happens to exist. 
 present, (3) only then no secret renders. `$mustRender` is required and non-empty — an
 empty list throws at call time, because a negative-only check can pass against empty output.
 
+Every entry of both lists must be a non-blank string, or the call throws
+`InvalidArgumentException`: a `null` secret (`config('a.key.that.is.not.set')`) or an empty one
+(an unset env var) can never be found, so the leak check would pass while checking nothing, and
+an empty `$mustRender` needle is found in every output. Set the secret to a real value in the
+test first. An empty `$secrets` *list* is allowed — that is a deliberate render-only check.
+
 ## The model-swap proof
 
 ```php
@@ -422,9 +492,11 @@ ArchPresets::modelsGoThroughTheFacade('RoundlyConsulting\Teams');
   depth-aware, so `array<string, int>`, `array{a: int}`, `Closure(int, string): bool` and
   `array $x = ['a' => 1]` never miscount. Each failure hands back the `@method` line to paste.
 - **`toBeFakeable()`** — the facade declares a real `public static function fake(): XFake`,
-  `XFake` is a **subtype of the accessor type** (otherwise every constructor-injected manager
-  `TypeError`s under the fake), and calling it installs the same instance as the facade root
-  **and** as `app(<accessor>)`. Runs in the booted app, then restores the real binding.
+  `XFake` is a **proper subtype of the accessor type** (otherwise every constructor-injected
+  manager `TypeError`s under the fake — and the accessor type itself is not a fake: a `fake()`
+  that swaps the real manager in for itself records nothing), and calling it builds a **new**
+  instance and installs it as the facade root **and** as `app(<accessor>)`. Runs in the booted
+  app, then restores the real binding.
 - **`toReachEveryAction(string $actionsDir, array $except = [], array $via = [])`** — every
   concrete, non-`@internal` class under `$actionsDir` is referenced from the facade surface:
   the root, the class the container binds it to, and every sub-accessor or handle reached
@@ -450,7 +522,17 @@ stateful behaviour, which is exactly the case the convention exempts.
 ## Architecture presets
 
 Nine composable presets, each aimed at a real class of bug. Call one at the top of a Pest
-arch file; it registers its own case.
+arch file; it registers its own case. Bind the arch file to your `PackageTestCase`-based
+TestCase (`uses(TestCase::class)->in('Arch', …)` in `tests/Pest.php`, as in
+[Installation](#installation)): `swappableModelsAreNotFinal` reads the config default from the
+booted app and fails with instructions when there is none.
+
+The three namespace-scoped presets built on Pest's arch layer (`strictTypes`,
+`finalByDefault`, `noLocalCryptoPrimitives`) each register a companion case —
+`preset: … has something to check` — that **fails** when the namespace resolves to nothing
+through Composer's PSR-4 map (one typo'd letter) or when `$ignoring` exempts everything in it.
+Pest's own arch case passes over an empty set; the companion is what makes these presets
+able to fail.
 
 ```php
 use RoundlyConsulting\Testing\Arch\ArchPresets;
@@ -462,7 +544,7 @@ ArchPresets::noLocalCryptoPrimitives(string $namespace, array $ignoring = []);
 ArchPresets::modelsResolveThroughSeam(string $srcDir, string $seamDir = 'Support', array $modelKeys = []);
 ArchPresets::morphColumnsUseTheSeam(string $migrationsDir);        // no raw $table->morphs()
 ArchPresets::runtimeRequireIsWhitelisted(string $composerJson, array $alsoAllow = []);
-ArchPresets::noDebuggingLeftovers(array $ignoring = [], ?string $srcDir = null); // dd/dump/ray/var_dump/print_r
+ArchPresets::noDebuggingLeftovers(array $ignoring = [], ?string $srcDir = null); // dd/dump/ray/var_dump/print_r, ->dd()
 ArchPresets::modelsGoThroughTheFacade(string $namespace, array $ignoring = []); // models/traits never call actions
 ArchPresets::shadowedClassesAreFinal(string $namespace, array $exemptions); // only if you use ->ignoring()
 ArchPresets::exemptionsExist(array $exemptions, string $for); // the pin the presets register for you
@@ -470,9 +552,20 @@ ArchPresets::exemptionsExist(array $exemptions, string $for); // the pin the pre
 
 ### Exempt through the `$ignoring` **parameter**, not `->ignoring()`
 
-**Every preset takes an `$ignoring` parameter. Use it.** Entries passed that way are checked:
-a name that silences nothing — a typo, or an exemption that outlived the class it excused —
-**fails**, because a hole shaped like coverage is worse than no coverage.
+**Every preset takes an `$ignoring` parameter. Use it.** Entries passed that way are checked,
+because a hole shaped like coverage is worse than no coverage. An entry **fails** when:
+
+- it names **nothing that exists** — no class, interface, trait or enum, and no namespace that
+  holds PHP files (a typo, or an exemption that outlived the class it excused);
+- it exists but matches **nothing the preset scans** — a real class from another namespace
+  handed to `strictTypes` / `finalByDefault` / `noLocalCryptoPrimitives`, or a
+  `noDebuggingLeftovers` entry matching no class declared under its `$srcDir`.
+  `modelsGoThroughTheFacade` goes further and fails an entry that exempts no violating class.
+
+What is **not** detected: an entry naming a class that already complies — an already-final
+class in a `finalByDefault` list, an already-strict file in a `strictTypes` list. It is inert
+today, and it silently re-opens the ban the day that class stops complying; keep each list to
+the classes that need it.
 
 ```php
 ArchPresets::finalByDefault('RoundlyConsulting\Shops\Actions', [SomeBase::class]);
@@ -609,6 +702,11 @@ graph by policy — so `ray` was filtered out before the ban ran and **could nev
 while the other four bit normally. The one debug tool you'd realistically leave behind was
 the exact one the preset couldn't catch. Tokens don't care whether the function exists.
 
+Besides the five global functions it bans the helpers Laravel hangs on its own objects —
+`$query->dd()`, `$collection->dd()`, `->ddRawSql()`, `->dumpRawSql()`. A chained `->dump()`
+is deliberately allowed: `$yaml->dump()` and a package's own `Resource::dump()` are ordinary
+API, so the name alone cannot tell a leftover from a feature.
+
 **Bugs each prevents:**
 
 | Preset | Bug it prevents |
@@ -637,11 +735,15 @@ ArchPresets::swappableModelsAreNotFinal([Shop::class => 'shops.shop_model']);
 ```
 
 `swappableModelsAreNotFinal` asserts each mapped model is non-final **and** that the config
-key defaults to that very model. The same check is available per-model as an expectation:
+key defaults to that very model. The same check is available per-model as an expectation
+(and as `Assert::modelIsSwappableVia()`):
 
 ```php
 expect(Shop::class)->toBeSwappableVia('shops.shop_model');
 ```
+
+All three read the config default, so they need the booted app — bind the file to your
+`PackageTestCase`-based TestCase.
 
 ## The package base test case *(package-only)*
 
@@ -718,7 +820,9 @@ it('uses jsonb')->skip(fn () => DriverMatrix::driver() !== 'pgsql');
 TestCase that does not extend the base case. `configure()` points the default `testing`
 connection at `TESTING_DB_DRIVER` (default: in-memory SQLite, foreign keys on) and registers
 `pgsql` and `mysql` as named connections, present-but-unreachable off a driver leg, so a
-gated assertion skips *visibly* rather than never firing.
+gated assertion skips *visibly* rather than never firing. `TESTING_DB_DRIVER` must be one of
+`sqlite`, `pgsql`, `mysql`, `mariadb`; anything else (`postgres`, `sqlsrv`) throws
+`InvalidArgumentException` instead of quietly running the leg on SQLite.
 
 **A CI leg must export `TESTING_DB_DRIVER`.** The location vars
 (`TESTING_DB_{HOST,PORT,DATABASE,USERNAME,PASSWORD}`) only say *where* the engine is;
@@ -752,8 +856,11 @@ it('reads every services key it relies on from the shipped config', function ():
 });
 
 it('does not leak credentials through artisan about', function (): void {
+    // Only a secret that is set can be looked for — a null or empty entry throws.
+    config(['services.stripe.secret' => 'sk_test_do_not_render_me']);
+
     expect('environment')->toLeakNoSecrets(
-        secrets: [config('services.stripe.secret')],
+        secrets: [config('app.key'), config('services.stripe.secret')],
         mustRender: ['Application Name'],
     );
 });
@@ -764,8 +871,8 @@ forward config contract (reverse opt-in), the `about` secret
 capture, the model-swap proof
 (apps consume config-swappable vendor models too), the lock recorders, `DriverMatrix`, and
 every arch preset except `runtimeRequireIsWhitelisted` (roundly-specific whitelist — but
-`alsoAllow` makes even that usable). Every assertion also has a static `Assert::…()` mirror
-for plain-PHPUnit suites.
+`alsoAllow` makes even that usable). Every expectation also has a static `Assert::…()` mirror
+for plain-PHPUnit suites — `toBeSwappableVia` included, as `Assert::modelIsSwappableVia()`.
 
 ## Testing
 
