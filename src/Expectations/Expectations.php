@@ -9,6 +9,9 @@ use RoundlyConsulting\Testing\Arch\SwappableModels;
 use RoundlyConsulting\Testing\Assert;
 use RoundlyConsulting\Testing\Assertions\AboutSecrets;
 use RoundlyConsulting\Testing\Assertions\ConfigContract\ConfigContract;
+use RoundlyConsulting\Testing\Assertions\Facades\ActionReach;
+use RoundlyConsulting\Testing\Assertions\Facades\FacadeDocblock;
+use RoundlyConsulting\Testing\Assertions\Facades\FacadeFake;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationAutoload;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationGraph;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationPublish;
@@ -93,6 +96,24 @@ final class Expectations
 
         expect()->extend('toBeSwappableVia', function (string $configKey): mixed {
             SwappableModels::assertEntry((string) $this->value, $configKey);
+
+            return $this;
+        });
+
+        expect()->extend('toDocumentItsRoot', function (array $except = []): mixed {
+            FacadeDocblock::assert((string) $this->value, $except);
+
+            return $this;
+        });
+
+        expect()->extend('toBeFakeable', function (): mixed {
+            FacadeFake::assert((string) $this->value);
+
+            return $this;
+        });
+
+        expect()->extend('toReachEveryAction', function (string $actionsDir, array $except = [], array $via = []): mixed {
+            ActionReach::assert((string) $this->value, $actionsDir, $except, $via);
 
             return $this;
         });

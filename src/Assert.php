@@ -6,9 +6,13 @@ namespace RoundlyConsulting\Testing;
 
 use Closure;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Facade;
 use Illuminate\Support\ServiceProvider;
 use RoundlyConsulting\Testing\Assertions\AboutSecrets;
 use RoundlyConsulting\Testing\Assertions\ConfigContract\ConfigContract;
+use RoundlyConsulting\Testing\Assertions\Facades\ActionReach;
+use RoundlyConsulting\Testing\Assertions\Facades\FacadeDocblock;
+use RoundlyConsulting\Testing\Assertions\Facades\FacadeFake;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationAutoload;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationGraph;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationPublish;
@@ -141,5 +145,45 @@ final class Assert
     public static function modelSwapHonoured(string $configKey, string $subclass, Closure $exercise, bool $expectsCreation = true): void
     {
         ModelSwap::assert($configKey, $subclass, $exercise, $expectsCreation);
+    }
+
+    /**
+     * Secondary escape hatch for `expect($facade)->toDocumentItsRoot(...)`: pin that the
+     * facade is `final`, names a class-string root, and that its `@method static` docblock
+     * matches that root exactly — every documentable public method listed, no phantom, and
+     * every parameter count right.
+     *
+     * @param  class-string<Facade>|string  $facade
+     * @param  list<string>  $except  root method names deliberately undocumented (rot-checked)
+     */
+    public static function facadeDocumentsItsRoot(string $facade, array $except = []): void
+    {
+        FacadeDocblock::assert($facade, $except);
+    }
+
+    /**
+     * Secondary escape hatch for `expect($facade)->toBeFakeable()`: pin a real `fake()` whose
+     * declared return type is a subtype of the accessor type, and that installing it swaps
+     * both the facade root and `app(<accessor>)`. Needs the booted application.
+     *
+     * @param  class-string<Facade>|string  $facade
+     */
+    public static function facadeIsFakeable(string $facade): void
+    {
+        FacadeFake::assert($facade);
+    }
+
+    /**
+     * Secondary escape hatch for `expect($facade)->toReachEveryAction(...)`: pin that every
+     * host-facing (non-`@internal`) action under $actionsDir is referenced from the facade's
+     * surface — its root and every sub-accessor reached through return types.
+     *
+     * @param  class-string<Facade>|string  $facade
+     * @param  list<string>  $except  unreachable actions deliberately tolerated (rot-checked)
+     * @param  list<string>  $via  helpers the manager holds but never returns (rot-checked)
+     */
+    public static function facadeReachesEveryAction(string $facade, string $actionsDir, array $except = [], array $via = []): void
+    {
+        ActionReach::assert($facade, $actionsDir, $except, $via);
     }
 }
