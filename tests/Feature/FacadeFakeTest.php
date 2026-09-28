@@ -9,7 +9,9 @@ use RoundlyConsulting\Testing\Tests\Fixtures\Facades\Broken\DocblockOnlyFake;
 use RoundlyConsulting\Testing\Tests\Fixtures\Facades\Broken\InstanceFake;
 use RoundlyConsulting\Testing\Tests\Fixtures\Facades\Broken\NoSwapFake;
 use RoundlyConsulting\Testing\Tests\Fixtures\Facades\Broken\NotASubtypeFake;
+use RoundlyConsulting\Testing\Tests\Fixtures\Facades\Broken\RealRootFake;
 use RoundlyConsulting\Testing\Tests\Fixtures\Facades\Broken\RootOnlyFake;
+use RoundlyConsulting\Testing\Tests\Fixtures\Facades\Broken\SelfFake;
 use RoundlyConsulting\Testing\Tests\Fixtures\Facades\Broken\StringKeyed;
 use RoundlyConsulting\Testing\Tests\Fixtures\Facades\Broken\UnionFake;
 use RoundlyConsulting\Testing\Tests\Fixtures\Facades\Broken\UntypedFake;
@@ -127,4 +129,24 @@ it('needs the booted application to run fake()', function (): void {
     } finally {
         Facade::setFacadeApplication($app);
     }
+});
+
+// ---------------------------------------------------------------------------
+// A "fake" that is the real root is not a fake: it records nothing.
+// ---------------------------------------------------------------------------
+
+it('rejects a fake() that returns the root type itself', function (): void {
+    // `is_a($root, $root)` is reflexive, so "a subtype of the accessor" used to include the
+    // accessor — and a fake() that swaps the real manager in for itself passed.
+    expect(fn () => expect(SelfFake::class)->toBeFakeable())
+        ->toThrow(AssertionFailedError::class, 'is the accessor type itself');
+});
+
+it('rejects a fake() that hands back the instance the container already held', function (): void {
+    // The container already resolves the fake class for the accessor, so the declared type
+    // checks out — but fake() built nothing: it re-installed what was there.
+    app()->instance(TeamsManager::class, app(TeamsFake::class));
+
+    expect(fn () => expect(RealRootFake::class)->toBeFakeable())
+        ->toThrow(AssertionFailedError::class, 'already resolved');
 });

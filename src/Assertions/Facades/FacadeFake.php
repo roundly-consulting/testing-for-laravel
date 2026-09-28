@@ -28,9 +28,10 @@ use ReflectionNamedType;
  * ## What is checked
  *
  * Statically: the facade declares a real `public static function fake()` whose declared
- * return type is a class R, and R is a subtype of the accessor type. Then, in the booted
- * application: calling `fake()` returns an R, the facade root **is** that instance, and
- * `app(<accessor>)` resolves that **same** instance (`static::swap()` does both).
+ * return type is a class R, and R is a **proper** subtype of the accessor type — the accessor
+ * itself is not a fake of itself. Then, in the booted application: calling `fake()` returns
+ * a new R (not the instance the container already held), the facade root **is** that
+ * instance, and `app(<accessor>)` resolves that **same** instance (`static::swap()` does both).
  *
  * ## Side-effect free
  *
@@ -94,6 +95,17 @@ final class FacadeFake
             .'contract).',
         );
 
+        // `is_a()` is reflexive, so the check above also accepts the accessor itself — and a
+        // fake() typed as the manager that swaps the real manager in for itself passed while
+        // recording nothing. A fake is a *proper* subtype.
+        Assert::assertNotSame(
+            strtolower(ltrim($subject->accessor, '\\')),
+            strtolower(ltrim($fakeClass, '\\')),
+            "{$subject->facade}::fake() declares {$fakeClass}, which is the accessor type itself — not a fake of "
+            .'it. Swapping the real root in for itself records nothing and asserts nothing. Declare '
+            ."`fake(): {$short}Fake` with a {$short}Fake that extends the manager (or implements the contract).",
+        );
+
         $app = Facade::getFacadeApplication();
 
         Assert::assertTrue(
@@ -114,6 +126,15 @@ final class FacadeFake
                 $fake,
                 "{$short}::fake() returned ".get_debug_type($fake).", not the {$fakeClass} it declares.",
             );
+
+            if ($previous !== null) {
+                Assert::assertNotSame(
+                    $previous,
+                    $fake,
+                    "{$short}::fake() returned the instance app({$accessor}) had already resolved, not a new fake. "
+                    .'Build a fresh fake on every call — re-installing what was already there fakes nothing.',
+                );
+            }
 
             Assert::assertSame(
                 $fake,
