@@ -37,13 +37,17 @@ final class Assert
      *                                         check cannot pass over an empty parse
      * @param  array<string, string>  $tableResolvers  raw expression => table, for non-literal
      *                                                 `Schema::create($var)` / `->constrained(Class::method())`
+     *                                                 / `foreignIdFor($model)`
+     * @param  list<string>  $externalTables  tables that exist before the set runs (the host's
+     *                                        `users`, a vendor table) — rot-checked
      */
     public static function migrationsRunInDependencyOrder(
         string $migrationsDir,
         ?int $expectedForeignKeys = null,
         array $tableResolvers = [],
+        array $externalTables = [],
     ): void {
-        MigrationGraph::forDirectory($migrationsDir, $tableResolvers)
+        MigrationGraph::forDirectory($migrationsDir, $tableResolvers, $externalTables)
             ->assertRunnable($expectedForeignKeys);
     }
 

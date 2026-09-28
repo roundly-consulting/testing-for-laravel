@@ -45,8 +45,8 @@ final class Expectations
 
         self::$registered = true;
 
-        expect()->extend('toHaveRunnableMigrationOrder', function (?int $foreignKeys = null, array $tableResolvers = []): mixed {
-            MigrationGraph::forDirectory((string) $this->value, $tableResolvers)
+        expect()->extend('toHaveRunnableMigrationOrder', function (?int $foreignKeys = null, array $tableResolvers = [], array $externalTables = []): mixed {
+            MigrationGraph::forDirectory((string) $this->value, $tableResolvers, array_values($externalTables))
                 ->assertRunnable($foreignKeys);
 
             return $this;

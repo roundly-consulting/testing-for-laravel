@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use PHPUnit\Framework\AssertionFailedError;
+use RoundlyConsulting\Testing\Assert;
 
 // ---------------------------------------------------------------------------
 // Green: every foreign-key form the fleet ships parses and passes.
@@ -69,4 +70,90 @@ it('rejects a mispinned edge count even on a correct order', function (): void {
 it('rejects a missing migrations directory', function (): void {
     expect(fn (): mixed => expect(fixturePath('green/does-not-exist'))->toHaveRunnableMigrationOrder())
         ->toThrow(AssertionFailedError::class);
+});
+
+// ---------------------------------------------------------------------------
+// Block order inside one file — a file is not one instant.
+// ---------------------------------------------------------------------------
+
+it('accepts a parent and child created in the same migration, parent first', function (): void {
+    expect(fixturePath('green/same-file'))->toHaveRunnableMigrationOrder(foreignKeys: 1);
+});
+
+it('rejects a child created before its parent in the same migration', function (): void {
+    expect(fn (): mixed => expect(fixturePath('broken/same-file-child-first'))->toHaveRunnableMigrationOrder(foreignKeys: 1))
+        ->toThrow(AssertionFailedError::class, '`team_members` references `teams`, which must be created first');
+});
+
+// ---------------------------------------------------------------------------
+// A commented-out key is not a key.
+// ---------------------------------------------------------------------------
+
+it('ignores foreign keys that are commented out', function (): void {
+    // Two commented-out declarations sit beside the one real key. Counting them inflated the
+    // pin (and a commented key onto a missing table failed a correct set).
+    expect(fixturePath('green/commented-out'))->toHaveRunnableMigrationOrder(foreignKeys: 1);
+});
+
+// ---------------------------------------------------------------------------
+// The rest of Laravel's foreign-key forms.
+// ---------------------------------------------------------------------------
+
+it('understands foreignIdFor(), multi-argument and named-argument constrained()', function (): void {
+    expect(fixturePath('green/fk-forms'))->toHaveRunnableMigrationOrder(foreignKeys: 7);
+});
+
+it('resolves a foreignIdFor() table from the model, not from the class name', function (): void {
+    // Imprint's table is `imprints_catalogue`; the conventional guess `imprints` is never
+    // created, so a name-based guess would go red on a correct order.
+    expect(fixturePath('green/fk-forms'))->toHaveRunnableMigrationOrder(foreignKeys: 7);
+    expect(fn (): mixed => expect(fixturePath('green/fk-forms'))->toHaveRunnableMigrationOrder(
+        foreignKeys: 7,
+        externalTables: ['imprints'],
+    ))->toThrow(AssertionFailedError::class, 'imprints');
+});
+
+it('fails a foreignIdFor() whose model it cannot resolve, naming the resolver to add', function (): void {
+    expect(fn (): mixed => expect(fixturePath('broken/foreign-id-for-unresolved'))->toHaveRunnableMigrationOrder())
+        ->toThrow(AssertionFailedError::class, "tableResolvers: ['\$model' => 'table']");
+});
+
+it('maps an unresolvable foreignIdFor() model through tableResolvers', function (): void {
+    expect(fixturePath('broken/foreign-id-for-unresolved'))->toHaveRunnableMigrationOrder(
+        foreignKeys: 1,
+        tableResolvers: ['$model' => 'books'],
+    );
+});
+
+// ---------------------------------------------------------------------------
+// Tables the set builds on but does not own.
+// ---------------------------------------------------------------------------
+
+it('fails a key onto a table the set does not create', function (): void {
+    expect(fn (): mixed => expect(fixturePath('green/host-tables'))->toHaveRunnableMigrationOrder(foreignKeys: 1))
+        ->toThrow(AssertionFailedError::class);
+});
+
+it('accepts keys onto and ALTERs of declared external tables', function (): void {
+    expect(fixturePath('green/host-tables'))->toHaveRunnableMigrationOrder(foreignKeys: 1, externalTables: ['users']);
+});
+
+it('fails an external table the set never references', function (): void {
+    expect(fn (): mixed => expect(fixturePath('green/host-tables'))->toHaveRunnableMigrationOrder(
+        foreignKeys: 1,
+        externalTables: ['users', 'teams'],
+    ))->toThrow(AssertionFailedError::class, 'teams');
+});
+
+it('fails an external table the set itself creates', function (): void {
+    expect(fn (): mixed => expect(fixturePath('green/same-file'))->toHaveRunnableMigrationOrder(
+        foreignKeys: 1,
+        externalTables: ['teams'],
+    ))->toThrow(AssertionFailedError::class, 'teams');
+});
+
+it('mirrors external tables through the static escape hatch', function (): void {
+    Assert::migrationsRunInDependencyOrder(fixturePath('green/host-tables'), 1, [], ['users']);
+
+    expect(true)->toBeTrue();
 });

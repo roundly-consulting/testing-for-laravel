@@ -171,3 +171,16 @@ it('fails the negative control when a postgres engine is down, instead of counti
         ->toThrow(AssertionFailedError::class, 'not reachable')
         ->and(config('database.default'))->toBe($default);
 })->skip(fn (): bool => ! extension_loaded('pdo_pgsql'), 'pdo_pgsql is not installed');
+
+it('applies the same-file and every-FK-form sets on a live connection', function (): void {
+    // The structural pin's green fixtures are only honest if a real run agrees with them.
+    expect(fixturePath('green/same-file'))->toApplyOnConnection('sqlite_real', migrations: 1)
+        ->and(fixturePath('green/fk-forms'))->toApplyOnConnection('sqlite_real', migrations: 2);
+});
+
+it('applies the same-file and every-FK-form sets on postgres, and rejects the same-file child-first order', function (): void {
+    expect(fixturePath('green/same-file'))->toApplyOnConnection('pgsql', migrations: 1)
+        ->and(fixturePath('green/fk-forms'))->toApplyOnConnection('pgsql', migrations: 2)
+        ->and(fixturePath('broken/same-file-child-first'))
+        ->toRejectBrokenOrderOnConnection(fn (array $files): array => $files, 'pgsql');
+})->skip(fn (): bool => ! test()->connectionAvailable('pgsql'), 'pgsql connection not available');
