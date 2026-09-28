@@ -5,6 +5,7 @@ declare(strict_types=1);
 use PHPUnit\Framework\AssertionFailedError;
 use RoundlyConsulting\Testing\Arch\ArchPresets;
 use RoundlyConsulting\Testing\Arch\SwappableModels;
+use RoundlyConsulting\Testing\Assert;
 use RoundlyConsulting\Testing\Tests\Fixtures\Arch\FinalSwappableModel;
 use RoundlyConsulting\Testing\Tests\Fixtures\Arch\SwappableModel;
 use RoundlyConsulting\Testing\Tests\Support\ArchPresetsTestCase;
@@ -56,4 +57,15 @@ it('rejects a mapped model class that does not exist', function (): void {
 it('rejects a final model through the toBeSwappableVia expectation', function (): void {
     expect(fn () => expect(FinalSwappableModel::class)->toBeSwappableVia('arch.record_model'))
         ->toThrow(AssertionFailedError::class);
+});
+
+// ---------------------------------------------------------------------------
+// The static mirror the README promises for every expectation.
+// ---------------------------------------------------------------------------
+
+it('mirrors toBeSwappableVia through the static Assert', function (): void {
+    Assert::modelIsSwappableVia(SwappableModel::class, 'arch.record_model');
+
+    expect(fn () => Assert::modelIsSwappableVia(FinalSwappableModel::class, 'arch.record_model'))
+        ->toThrow(AssertionFailedError::class, 'declared `final`');
 });

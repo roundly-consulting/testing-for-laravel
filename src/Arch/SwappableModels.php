@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace RoundlyConsulting\Testing\Arch;
 
+use Illuminate\Container\Container;
 use PHPUnit\Framework\Assert;
 use ReflectionClass;
 
@@ -18,9 +19,11 @@ use ReflectionClass;
  *   2. the config key it advertises defaults to the very model — a seam that defaults
  *      to something else is not really this model's seam.
  *
- * It is the assertion behind {@see ArchPresets::swappableModelsAreNotFinal()} and the
- * `expect($model)->toBeSwappableVia($configKey)` expectation; both call in here so the
- * check is identical however it is reached.
+ * It is the assertion behind {@see ArchPresets::swappableModelsAreNotFinal()}, the
+ * `expect($model)->toBeSwappableVia($configKey)` expectation and
+ * `Assert::modelIsSwappableVia()`; all call in here so the check is identical however it is
+ * reached. The config half needs the booted application — an arch file must be bound to the
+ * package's TestCase.
  */
 final class SwappableModels
 {
@@ -55,6 +58,15 @@ final class SwappableModels
             (new ReflectionClass($model))->isFinal(),
             "Swappable model {$model} is declared `final`, but config '{$configKey}' invites a host "
             .'subclass — a final class cannot be extended, so the swap is a PHP fatal error. Drop `final`.',
+        );
+
+        // The config half reads the booted app's config. In a Pest file bound to no TestCase
+        // there is none, and `config()` died with "Target class [config] does not exist".
+        Assert::assertTrue(
+            Container::getInstance()->bound('config'),
+            "Checking that '{$configKey}' defaults to {$model} needs the booted application, and this test has "
+            .'none. Bind the file to your PackageTestCase-based TestCase — `uses(TestCase::class)` in the file, '
+            .'or `uses(TestCase::class)->in(\'Arch\')` in tests/Pest.php.',
         );
 
         $default = config($configKey);

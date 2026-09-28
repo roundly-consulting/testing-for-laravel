@@ -8,6 +8,7 @@ use Closure;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Facade;
 use Illuminate\Support\ServiceProvider;
+use RoundlyConsulting\Testing\Arch\SwappableModels;
 use RoundlyConsulting\Testing\Assertions\AboutSecrets;
 use RoundlyConsulting\Testing\Assertions\ConfigContract\ConfigContract;
 use RoundlyConsulting\Testing\Assertions\Facades\ActionReach;
@@ -150,6 +151,18 @@ final class Assert
     public static function modelSwapHonoured(string $configKey, string $subclass, Closure $exercise, bool $expectsCreation = true): void
     {
         ModelSwap::assert($configKey, $subclass, $exercise, $expectsCreation);
+    }
+
+    /**
+     * Secondary escape hatch for `expect($model)->toBeSwappableVia($configKey)`: pin that a
+     * config-swappable model is not `final` and that `$configKey` defaults to it. Needs the
+     * booted application (it reads the config default).
+     *
+     * @param  class-string  $model
+     */
+    public static function modelIsSwappableVia(string $model, string $configKey): void
+    {
+        SwappableModels::assertEntry($model, $configKey);
     }
 
     /**
