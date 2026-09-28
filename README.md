@@ -21,8 +21,8 @@
 
 **The test suite that can't lie to you.** Dev-only test machinery for Laravel packages
 and applications — base test cases, a structural migration-order pin, a real-engine
-runner, a both-directions config contract, a secret-safe `about` capture, a model-swap proof, lock
-recorders, a driver matrix, and seven architecture presets. Every assertion is built so it
+runner, a both-directions config contract, a secret-safe `about` capture, a model-swap proof, a
+facade-contract pin, lock recorders, a driver matrix, and nine architecture presets. Every assertion is built so it
 **can always fail**: no vacuous green, no assertion that passes because it never really ran.
 
 Each helper targets a bug that slips past a test that *can't* fail — a secret-leak check
@@ -395,9 +395,59 @@ expect('media.media_model')->toHonourModelSwap(
 );
 ```
 
+## The facade contract
+
+Every roundly package exposes one public API in three layers — **actions** (the behaviour),
+a **manager** (the injectable facade root) and a `final` **facade** — so facade fans, DI users
+and people who want the raw action all run the same code. Three expectations and one arch
+preset keep that contract honest:
+
+```php
+// tests/Feature/FacadeTest.php — bound to your PackageTestCase-based TestCase
+expect(Teams::class)
+    ->toDocumentItsRoot()                                  // docblock == root, class-string accessor, final
+    ->toBeFakeable()                                       // real fake(), subtype of the root, DI gets it
+    ->toReachEveryAction(__DIR__.'/../../src/Actions');    // every non-@internal action is reachable
+
+// tests/Arch/ArchTest.php
+ArchPresets::modelsGoThroughTheFacade('RoundlyConsulting\Teams');
+```
+
+- **`toDocumentItsRoot(array $except = [])`** — the facade is `final`, `getFacadeAccessor()`
+  returns a manager/contract **class-string** (a string key like `'teams'` fails), and its
+  `@method static` lines match the root exactly: every public method documented, no phantom,
+  every parameter count right. Constructor, magic, `@internal` and vendor-inherited methods
+  (`Manager::driver()`, `Macroable::macro()`) are not demanded; a documented name may also
+  live on the facade itself (`fake()`) or on the fake (`assert*()`). Parameters are counted
+  depth-aware, so `array<string, int>`, `array{a: int}`, `Closure(int, string): bool` and
+  `array $x = ['a' => 1]` never miscount. Each failure hands back the `@method` line to paste.
+- **`toBeFakeable()`** — the facade declares a real `public static function fake(): XFake`,
+  `XFake` is a **subtype of the accessor type** (otherwise every constructor-injected manager
+  `TypeError`s under the fake), and calling it installs the same instance as the facade root
+  **and** as `app(<accessor>)`. Runs in the booted app, then restores the real binding.
+- **`toReachEveryAction(string $actionsDir, array $except = [], array $via = [])`** — every
+  concrete, non-`@internal` class under `$actionsDir` is referenced from the facade surface:
+  the root, the class the container binds it to, and every sub-accessor or handle reached
+  through public return types (`Teams::for($team)->members()->add()` is two hops). Models,
+  DTOs, events, enums, exceptions, the fake and other actions are never surface. A helper the
+  manager *holds* but never *returns* goes in `$via`.
+- **`ArchPresets::modelsGoThroughTheFacade($namespace, $ignoring = [])`** — nothing under
+  `{ns}\Models`, `{ns}\Concerns` or `{ns}\Traits` references `{ns}\Actions`, so `$user->like()`
+  goes through the manager and the fake sees it.
+
+**Bugs they prevent:** facades with zero `@method` lines over a real manager, docblocks
+naming renamed methods, fakes that crashed dependency injection, fakes bypassed by model
+traits, and ~70 host-facing actions no facade could reach. Like every pin here they cannot
+pass vacuously: an empty or missing actions directory, a docblock with no `@method` line, a
+root with nothing to document and a namespace with no models all fail — and every `$except`,
+`$via` and `$ignoring` entry must still silence something.
+
+This package ships no facade of its own: it is dev-only test machinery with no host-facing
+stateful behaviour, which is exactly the case the convention exempts.
+
 ## Architecture presets
 
-Seven composable presets, each aimed at a real class of bug. Call one at the top of a Pest
+Nine composable presets, each aimed at a real class of bug. Call one at the top of a Pest
 arch file; it registers its own case.
 
 ```php
@@ -408,8 +458,10 @@ ArchPresets::finalByDefault(string $namespace, array $ignoring = []);
 ArchPresets::swappableModelsAreNotFinal(array $map);               // [Shop::class => 'shops.shop_model']
 ArchPresets::noLocalCryptoPrimitives(string $namespace, array $ignoring = []);
 ArchPresets::modelsResolveThroughSeam(string $srcDir, string $seamDir = 'Support', array $modelKeys = []);
+ArchPresets::morphColumnsUseTheSeam(string $migrationsDir);        // no raw $table->morphs()
 ArchPresets::runtimeRequireIsWhitelisted(string $composerJson, array $alsoAllow = []);
 ArchPresets::noDebuggingLeftovers(array $ignoring = [], ?string $srcDir = null); // dd/dump/ray/var_dump/print_r
+ArchPresets::modelsGoThroughTheFacade(string $namespace, array $ignoring = []); // models/traits never call actions
 ArchPresets::shadowedClassesAreFinal(string $namespace, array $exemptions); // only if you use ->ignoring()
 ArchPresets::exemptionsExist(array $exemptions, string $for); // the pin the presets register for you
 ```
@@ -538,9 +590,10 @@ ArchPresets::modelsResolveThroughSeam(__DIR__.'/../src', 'Support', [
 ]);
 ```
 
-The four Pest's arch layer can't express (`swappableModelsAreNotFinal`,
-`modelsResolveThroughSeam`, `runtimeRequireIsWhitelisted`, `noDebuggingLeftovers`) register
-a token/reflection `it()` case instead. Those have **no** fluent `->ignoring()` at all — the
+The six Pest's arch layer can't express (`swappableModelsAreNotFinal`,
+`modelsResolveThroughSeam`, `morphColumnsUseTheSeam`, `runtimeRequireIsWhitelisted`,
+`noDebuggingLeftovers`, `modelsGoThroughTheFacade`) register a token/reflection `it()` case
+instead. Those have **no** fluent `->ignoring()` at all — the
 `$ignoring` parameter is the only way in, which is also why it is the form to learn:
 
 ```php
@@ -564,7 +617,9 @@ the exact one the preset couldn't catch. Tokens don't care whether the function 
 | `noLocalCryptoPrimitives` | crypto primitives (`hash`, `hash_hmac`, `openssl_*`, `sodium_*`, `random_bytes`, `base64_*`) re-implemented locally instead of in `crypto-for-laravel` (passkeys ban list). `hash_equals` is **not** banned — it *is* PHP's constant-time compare, not a copy of one, and banning it pushed callers toward `$a === $b`, a timing leak (see `CRYPTO_PRIMITIVES`) |
 | `modelsResolveThroughSeam` | `static::query()`/`self::query()`/`new static` **in a static context** resolving the *called* class, not the *configured* one — a swapped model that authorization silently ignores; also a swap literal read outside the seam — declare `$modelKeys` if your keys aren't `*_model` shaped |
 | `runtimeRequireIsWhitelisted` | a third-party vendor slipping into `require` and shipping transitively into every consumer (the dependency policy as a test) |
+| `morphColumnsUseTheSeam` | a raw `$table->morphs()` hardcoding a `bigint` id and breaking uuid/ulid hosts on a strict engine |
 | `noDebuggingLeftovers` | a stray `dd`/`dump`/`ray` shipped to production |
+| `modelsGoThroughTheFacade` | a model method or model trait calling an action directly, invisible to the facade's `fake()` |
 
 ### The deliberate tension: `finalByDefault` vs `swappableModelsAreNotFinal`
 

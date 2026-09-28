@@ -23,8 +23,16 @@ Initial public release.
   unused config keys.
 - A secret-safe `about` capture (`toLeakNoSecrets()`) and a model-swap proof
   (`toHonourModelSwap()`, `toBeSwappableVia()`).
-- Seven composable architecture presets in `ArchPresets`, from strict types and final-by-default
-  to a runtime-dependency whitelist and a no-debugging-leftovers check.
+- A facade-contract pin for the Actions → Manager → Facade convention:
+  `toDocumentItsRoot()` (a `final` facade, a class-string accessor, and a `@method static`
+  docblock that matches its root, counted depth-aware), `toBeFakeable()` (a real `fake()`
+  whose fake is a subtype of the root and replaces it for dependency injection too) and
+  `toReachEveryAction()` (every non-`@internal` action reachable through the facade and its
+  sub-accessors), each with a static `Assert` twin.
+- Nine composable architecture presets in `ArchPresets`, from strict types and final-by-default
+  to a runtime-dependency whitelist, a no-debugging-leftovers check and
+  `modelsGoThroughTheFacade()`, which keeps model methods and traits from calling actions
+  behind the fake's back.
 - `PackageTestCase`, a Testbench base case with foreign keys on, provider-based migration
   loading and model swaps applied before boot.
 - Lock recorders that make `lockForUpdate()` observable on SQLite, and a `DriverMatrix` for
