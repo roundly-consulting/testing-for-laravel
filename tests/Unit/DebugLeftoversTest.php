@@ -40,6 +40,36 @@ it('exempts a class by name', function () use ($fixture): void {
 
 it('exempts a whole namespace', function () use ($fixture): void {
     DebugLeftovers::assert($fixture('leftovers'), ['Fixture\Debug\Leftovers']);
+
+    expect(true)->toBeTrue();
+});
+
+it('catches the chained debug helpers Laravel puts on queries and collections', function () use ($fixture): void {
+    $message = '';
+
+    try {
+        DebugLeftovers::assert($fixture('leftovers'));
+    } catch (AssertionFailedError $failure) {
+        $message = $failure->getMessage();
+    }
+
+    expect($message)->toContain('ChainedDdLeftover.php: ->dd()')
+        ->toContain('ChainedDdLeftover.php: ->ddRawSql()')
+        ->toContain('ChainedDdLeftover.php: ->dumpRawSql()');
+});
+
+it('leaves a chained ->dump() alone — too many legitimate methods share the name', function () use ($fixture): void {
+    // Clean::run() calls `$items->dump()`; a `$yaml->dump()` or `$exporter->dump()` is ordinary API.
+    DebugLeftovers::assert($fixture('green'));
+
+    expect(true)->toBeTrue();
+});
+
+it('fails an exemption that matches no class in the scanned directory', function () use ($fixture): void {
+    // A real, autoloadable namespace — but nothing in `green/` declares a class under it, so the
+    // entry exempts nothing here.
+    expect(fn () => DebugLeftovers::assert($fixture('green'), ['Fixture\Debug\Leftovers', 'Fixture\Debug\Green\Clean']))
+        ->toThrow(AssertionFailedError::class, 'Fixture\Debug\Leftovers');
 });
 
 it('fails when the source directory does not exist', function (): void {

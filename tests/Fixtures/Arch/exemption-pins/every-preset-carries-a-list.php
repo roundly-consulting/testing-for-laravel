@@ -18,5 +18,5 @@ ArchPresets::noLocalCryptoPrimitives('RoundlyConsulting\Testing\Tests\Fixtures\A
 
 ArchPresets::noDebuggingLeftovers(
     ['RoundlyConsulting\Testing\Tests\Fixtures\Arch\ShadowGreen'],
-    dirname(__DIR__).'/debug/green',
+    dirname(__DIR__).'/ShadowGreen',
 );

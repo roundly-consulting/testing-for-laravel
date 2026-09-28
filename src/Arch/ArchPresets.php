@@ -165,13 +165,38 @@ final class ArchPresets
      * A counter (`#1`, `#2`) was rejected — it is not stable across edits: inserting a
      * preset renames every later case, breaking `--filter` and Pest's identity model.
      *
+     * ## `$within` — an exemption must land where the rule looks
+     *
+     * An entry that names a real class **outside** the scanned namespace silences nothing
+     * either: `finalByDefault('App\Shop\Support', [OpenAction::class])`, with `OpenAction` in
+     * `App\Shop\Actions`, used to pass the existence check. The namespace-scoped presets pass
+     * their namespace here, so such an entry fails too. What neither check can see is an entry
+     * whose class already *complies* (an already-final class in a `finalByDefault` list) — it
+     * is inert today and silently re-opens the ban the day the class stops complying, so keep
+     * lists to the classes that need them.
+     *
      * @param  list<string>  $exemptions
      * @param  string  $for  the rule the list exempts from, e.g. `no debugging leftovers`
+     * @param  string|null  $within  the namespace the rule scans; each entry must match something under it
      */
-    public static function exemptionsExist(array $exemptions, string $for): mixed
+    public static function exemptionsExist(array $exemptions, string $for, ?string $within = null): mixed
     {
-        return it("preset: every arch exemption for {$for} still silences something", function () use ($exemptions): void {
-            ArchExemptions::assert($exemptions);
+        return it("preset: every arch exemption for {$for} still silences something", function () use ($exemptions, $within): void {
+            ArchExemptions::assert($exemptions, $within);
+        });
+    }
+
+    /**
+     * Register the companion case that keeps a Pest-arch preset from passing over nothing: a
+     * typo'd namespace, or one whose every object is exempted, fails here instead of reporting
+     * green. See {@see ArchTargets}.
+     *
+     * @param  list<string>  $ignoring
+     */
+    private static function somethingToCheck(string $namespace, array $ignoring, string $label, bool $concreteClassesOnly = false): void
+    {
+        it("preset: {$label} has something to check", function () use ($namespace, $ignoring, $label, $concreteClassesOnly): void {
+            ArchTargets::assertSomethingToCheck($namespace, $ignoring, $label, $concreteClassesOnly);
         });
     }
 
@@ -184,12 +209,15 @@ final class ArchPresets
     {
         $label = 'strict types in '.$namespace;
 
+        self::somethingToCheck($namespace, $ignoring, $label);
+
         return self::exempt(
             arch('preset: '.$label)
                 ->expect($namespace)
                 ->toUseStrictTypes(),
             $ignoring,
             $label,
+            $namespace,
         );
     }
 
@@ -236,7 +264,9 @@ final class ArchPresets
             self::shadowedClassesAreFinal($namespace, $ignoring);
         }
 
-        return self::exempt($expectation, $ignoring, $label);
+        self::somethingToCheck($namespace, $ignoring, $label, concreteClassesOnly: true);
+
+        return self::exempt($expectation, $ignoring, $label, $namespace);
     }
 
     /**
@@ -295,6 +325,8 @@ final class ArchPresets
     {
         $label = 'no local crypto primitives in '.$namespace;
 
+        self::somethingToCheck($namespace, $ignoring, $label);
+
         return self::exempt(
             arch('preset: '.$label)
                 ->expect($namespace)
@@ -302,6 +334,7 @@ final class ArchPresets
                 ->toUse(self::CRYPTO_PRIMITIVES),
             $ignoring,
             $label,
+            $namespace,
         );
     }
 
@@ -477,14 +510,15 @@ final class ArchPresets
      *
      * @param  list<string>  $ignoring
      * @param  string  $for  the registering preset's own case description, minus `preset: `
+     * @param  string  $within  the namespace the preset scans — every entry must match under it
      */
-    private static function exempt(mixed $expectation, array $ignoring, string $for): mixed
+    private static function exempt(mixed $expectation, array $ignoring, string $for, string $within): mixed
     {
         if ($ignoring === []) {
             return $expectation;
         }
 
-        self::exemptionsExist($ignoring, $for);
+        self::exemptionsExist($ignoring, $for, $within);
 
         return $expectation->ignoring($ignoring); // @phpstan-ignore-line
     }

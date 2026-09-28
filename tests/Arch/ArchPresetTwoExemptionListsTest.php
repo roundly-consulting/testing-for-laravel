@@ -26,5 +26,5 @@ ArchPresets::finalByDefault('RoundlyConsulting\Testing\Tests\Fixtures\Arch\Shado
 
 ArchPresets::noDebuggingLeftovers(
     ['RoundlyConsulting\Testing\Tests\Fixtures\Arch\ShadowGreen'],
-    dirname(__DIR__).'/Fixtures/Arch/debug/green',
+    dirname(__DIR__).'/Fixtures/Arch/ShadowGreen',
 );

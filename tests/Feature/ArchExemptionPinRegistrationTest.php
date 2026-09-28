@@ -150,3 +150,27 @@ it('fails a stale exemption on the facade preset, in its pin and in the case its
     expect($results)->toHaveKey("it preset: {$label}")
         ->and($results["it preset: {$label}"])->toBeFalse();
 });
+
+it('fails each Pest-arch preset pointed at a namespace that holds nothing', function () use ($runArchFixture, $fixture): void {
+    $results = $runArchFixture($fixture('empty-namespace'));
+    $namespace = 'RoundlyConsulting\Testing\Tests\Fixtures\Arch\ShadowGren';
+
+    foreach (["strict types in {$namespace}", "classes are final by default in {$namespace}", "no local crypto primitives in {$namespace}"] as $label) {
+        // The companion case bites...
+        expect($results)->toHaveKey("it preset: {$label} has something to check")
+            ->and($results["it preset: {$label} has something to check"])->toBeFalse();
+
+        // ...where Pest's own arch case, over the same empty set, reports green. That contrast
+        // is the reason the companion exists; if Pest ever fails an empty target itself, this
+        // goes red and the companion can be revisited.
+        expect($results)->toHaveKey("preset: {$label}")
+            ->and($results["preset: {$label}"])->toBeTrue();
+    }
+});
+
+it('fails an exemption that exists but lives outside the namespace the preset scans', function () use ($runArchFixture, $fixture, $finalPin): void {
+    $results = $runArchFixture($fixture('out-of-scope-exemption'));
+
+    expect($results)->toHaveKey($finalPin)
+        ->and($results[$finalPin])->toBeFalse();
+});

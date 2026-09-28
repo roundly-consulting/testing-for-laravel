@@ -54,6 +54,18 @@ final class DebugLeftovers
     public const array FUNCTIONS = ['dd', 'dump', 'ray', 'var_dump', 'print_r'];
 
     /**
+     * The debugging helpers Laravel hangs on its own objects — `$query->dd()`,
+     * `$collection->dd()`, `->ddRawSql()`, `->dumpRawSql()` — banned when reached through `->`.
+     * As fatal in production as the global `dd()`, and they were invisible because every `->`
+     * call was skipped. `->dump()` is deliberately NOT here: `$yaml->dump()`,
+     * `$exporter->dump()` and a package's own `Resource::dump()` are ordinary API, so banning
+     * the name would fail correct code; the global `dump()` stays banned above.
+     *
+     * @var list<string>
+     */
+    public const array METHODS = ['dd', 'ddRawSql', 'dumpRawSql'];
+
+    /**
      * @param  list<string>  $ignoring  class/namespace exemptions — pinned by {@see ArchExemptions}
      */
     public static function assert(string $srcDir, array $ignoring = []): void
@@ -61,11 +73,17 @@ final class DebugLeftovers
         Assert::assertDirectoryExists($srcDir, "Source directory does not exist: {$srcDir}");
 
         $leftovers = [];
+        $declared = [];
 
         foreach (self::phpFiles($srcDir) as $file) {
             $tokens = self::meaningfulTokens((string) file_get_contents($file));
+            $class = self::declaredClass($tokens);
 
-            if (self::isExempt($tokens, $ignoring)) {
+            if ($class !== null) {
+                $declared[] = $class;
+            }
+
+            if (self::isExempt($class, $ignoring)) {
                 continue;
             }
 
@@ -73,6 +91,8 @@ final class DebugLeftovers
                 $leftovers[] = self::relative($srcDir, $file).": {$function}()";
             }
         }
+
+        self::assertExemptionsLandInScope($ignoring, $declared, $srcDir);
 
         sort($leftovers);
 
@@ -86,11 +106,41 @@ final class DebugLeftovers
     }
 
     /**
-     * Every banned function actually **called** in the file.
+     * An exemption that matches no class declared under `$srcDir` exempts nothing here —
+     * it names a real class somewhere else, or a namespace this directory does not hold.
      *
-     * A call is `name(` where `name` is not reached through `->` or `::` (a method named
-     * `dump()` on some object is not this ban's business) and is not the `function dump()`
-     * declaration itself. `\dd(` arrives as one fully-qualified token and is matched too.
+     * @param  list<string>  $ignoring
+     * @param  list<string>  $declared
+     */
+    private static function assertExemptionsLandInScope(array $ignoring, array $declared, string $srcDir): void
+    {
+        $outside = [];
+
+        foreach ($ignoring as $exemption) {
+            $matched = array_filter($declared, static fn (string $class): bool => self::matches($class, $exemption));
+
+            if ($matched === []) {
+                $outside[] = $exemption;
+            }
+        }
+
+        Assert::assertSame(
+            [],
+            $outside,
+            'These noDebuggingLeftovers exemptions match no class declared under '.$srcDir.': '
+            .implode(', ', $outside).'. They exempt nothing there — remove them, or pass the directory '
+            .'that holds the class as $srcDir.',
+        );
+    }
+
+    /**
+     * Every banned function actually **called** in the file, and every banned helper
+     * **method** called through `->` / `?->` (reported as `->dd`).
+     *
+     * A function call is `name(` where `name` is not reached through `->` or `::` (a method
+     * named `dump()` on some object is not this ban's business) and is not the
+     * `function dump()` declaration itself. `\dd(` arrives as one fully-qualified token and
+     * is matched too. A method call is `->name(` for a name in {@see self::METHODS}.
      *
      * @param  list<array{0: int|null, 1: string}>  $tokens
      * @return list<string>
@@ -109,7 +159,7 @@ final class DebugLeftovers
 
             $name = ltrim($text, '\\');
 
-            if (! in_array($name, self::FUNCTIONS, true)) {
+            if (! in_array($name, self::FUNCTIONS, true) && ! in_array($name, self::METHODS, true)) {
                 continue;
             }
 
@@ -121,10 +171,16 @@ final class DebugLeftovers
 
             $previous = $tokens[$i - 1] ?? null;
 
-            // `$x->dump(`, `Foo::dump(`, `function dump(` — not a call to the global.
-            if ($previous !== null && in_array($previous[0], [
-                T_OBJECT_OPERATOR, T_NULLSAFE_OBJECT_OPERATOR, T_DOUBLE_COLON, T_FUNCTION,
-            ], true)) {
+            if ($previous !== null && in_array($previous[0], [T_OBJECT_OPERATOR, T_NULLSAFE_OBJECT_OPERATOR], true)) {
+                if ($id === T_STRING && in_array($text, self::METHODS, true)) {
+                    $found[] = '->'.$text;
+                }
+
+                continue;
+            }
+
+            // `Foo::dump(`, `function dump(` — not a call to the global.
+            if ($previous !== null && in_array($previous[0], [T_DOUBLE_COLON, T_FUNCTION], true)) {
                 continue;
             }
 
@@ -140,26 +196,28 @@ final class DebugLeftovers
      * accepted. Exemptions themselves are pinned by {@see ArchExemptions}, so a typo fails
      * rather than silently widening the ban's blind spot.
      *
-     * @param  list<array{0: int|null, 1: string}>  $tokens
      * @param  list<string>  $ignoring
      */
-    private static function isExempt(array $tokens, array $ignoring): bool
+    private static function isExempt(?string $class, array $ignoring): bool
     {
-        $class = self::declaredClass($tokens);
-
         if ($class === null) {
             return false;
         }
 
         foreach ($ignoring as $exemption) {
-            $name = ltrim($exemption, '\\');
-
-            if ($class === $name || str_starts_with($class, $name.'\\')) {
+            if (self::matches($class, $exemption)) {
                 return true;
             }
         }
 
         return false;
+    }
+
+    private static function matches(string $class, string $exemption): bool
+    {
+        $name = ltrim($exemption, '\\');
+
+        return $class === $name || str_starts_with($class, $name.'\\');
     }
 
     /**

@@ -26,13 +26,21 @@ use SplFileInfo;
  * An entry is **live** when it names a real class/interface/trait/enum, or a namespace
  * under which at least one PHP file exists. Both forms are legitimate in `ignoring()`, so
  * checking only for classes would reject a namespace exemption for being what it is.
+ *
+ * Given the namespace the rule scans (`$within`), a live entry must also **land in it** — a
+ * real class from another namespace exempts nothing there. Whether the matched class actually
+ * *violates* the rule is not checked: that would need each rule's own verdict per class, and an
+ * entry that names an already-compliant class is inert rather than a hole (it becomes one only
+ * when the class stops complying — the reason to keep lists minimal).
  */
 final class ArchExemptions
 {
     /**
      * @param  list<string>  $exemptions
+     * @param  string|null  $within  the namespace the rule scans; when given, every entry must
+     *                               also match at least one object under it
      */
-    public static function assert(array $exemptions): void
+    public static function assert(array $exemptions, ?string $within = null): void
     {
         $stale = [];
 
@@ -51,6 +59,33 @@ final class ArchExemptions
             .'holds one: '.implode(', ', $stale).'. An exemption that matches nothing is either a typo '
             .'(`Types\Metric` for `Facades\Metric`) or has outlived the code it excused; both leave the '
             .'ban applying where you think it does not. Remove it, or fix the name.',
+        );
+
+        if ($within === null) {
+            return;
+        }
+
+        $objects = array_keys(ArchTargets::in($within));
+        $outside = [];
+
+        foreach ($exemptions as $exemption) {
+            $name = ltrim($exemption, '\\');
+            $matches = array_filter($objects, static fn (string $object): bool => str_starts_with($object, $name));
+
+            if ($matches === []) {
+                $outside[] = $exemption;
+            }
+        }
+
+        sort($outside);
+
+        Assert::assertSame(
+            [],
+            $outside,
+            "These arch exemptions exist but match nothing under {$within}, the namespace the rule scans: "
+            .implode(', ', $outside).'. They exempt nothing — most likely the class lives in another '
+            .'namespace than the one this preset checks. Remove them, or point them at the class the rule '
+            .'actually reports.',
         );
     }
 
