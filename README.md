@@ -438,8 +438,8 @@ class CustomMedia extends Media
 
 // config('media.media_model') swapped to CustomMedia::class before boot
 expect('media.media_model')->toHonourModelSwap(CustomMedia::class, function () use ($user, $path) {
-    $media = $user->addMediaFromPath($path, 'avatar'); // the real flow, not a resolver string check
-    return [$media, $user->firstMedia('avatar')];
+    $media = $user->addMedia($path)->toMediaBucket('avatar'); // the real flow, not a resolver string check
+    return [$media, $user->getFirstMedia('avatar')];
 });
 ```
 
@@ -460,7 +460,7 @@ fails with instructions. For a flow that genuinely creates no row, say so explic
 ```php
 expect('media.media_model')->toHonourModelSwap(
     CustomMedia::class,
-    fn () => $user->firstMedia('avatar'),   // reads an existing row, creates nothing
+    fn () => $user->getFirstMedia('avatar'),   // reads an existing row, creates nothing
     expectsCreation: false,
 );
 ```
