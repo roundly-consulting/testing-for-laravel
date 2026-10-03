@@ -62,7 +62,5 @@
                 "RoundlyConsulting\\Testing\\Pest\\Plugin"
             ]
         }
-    },
-    "minimum-stability": "dev",
-    "prefer-stable": true
+    }
 }
