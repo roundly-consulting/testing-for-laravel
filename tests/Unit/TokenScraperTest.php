@@ -429,3 +429,249 @@ it('reads a Blade view through its PHP-bearing constructs only', function (): vo
         @unlink($file);
     }
 });
+
+// ---------------------------------------------------------------------------
+// package-toolkit-for-laravel's readers — static, chained and declared.
+//
+// Each one reads config by key, and each one used to be invisible: a key read only through
+// `Config::enum()`, `Config::using(…)->integer()` or `ModelResolver::for()` scraped as
+// unread, and the fleet papered over it with `extraReadPrefixes` / `allowUnread` entries
+// that either counted every literal under a prefix or asserted that a live key was dead.
+// ---------------------------------------------------------------------------
+
+it('reads every static strict reader on the toolkit Config', function (): void {
+    expect(scrapeSource(<<<'PHP'
+        use RoundlyConsulting\PackageToolkit\Support\Config;
+
+        Config::boolean('shop.a');
+        Config::integer('shop.b', 1, min: 0);
+        Config::enum('shop.c', Mode::class, Mode::Fast);
+        Config::oneOf('shop.d', ['x', 'y'], 'x');
+        Config::requireString('shop.e');
+        PHP)['reads'])->toBe(['shop.a', 'shop.b', 'shop.c', 'shop.d', 'shop.e']);
+});
+
+it('reads the toolkit Config under an import alias', function (): void {
+    expect(scrapeSource(<<<'PHP'
+        use RoundlyConsulting\PackageToolkit\Support\Config as Strict;
+
+        Strict::enum('shop.a', Mode::class);
+        Strict::requireString('shop.b');
+        PHP)['reads'])->toBe(['shop.a', 'shop.b']);
+});
+
+it('reads a strict reader chained off a validator factory', function (string $call): void {
+    expect(scrapeSource("use RoundlyConsulting\\PackageToolkit\\Support\\Config;\nuse RoundlyConsulting\\PackageToolkit\\Support\\ConfigValidator;\n{$call}")['reads'])
+        ->toBe(['shop.k']);
+})->with([
+    'using()->integer()' => "Config::using(Failure::class)->integer('shop.k', 1, min: 0);",
+    'using()->enum() across lines' => "Config::using(Failure::class)\n    ->enum('shop.k', Mode::class);",
+    'using()->oneOf()' => "Config::using(Failure::class)->oneOf('shop.k', ['a'], 'a');",
+    'using()->requireString()' => "Config::using(Failure::class)->requireString('shop.k');",
+    'for()->boolean()' => "Config::for(['shop.k' => \$value])->boolean('shop.k');",
+    'for() with exception' => "Config::for([\$key => \$value], Failure::class)->boolean('shop.k', true);",
+    'forRepository()' => "ConfigValidator::forRepository()->integer('shop.k', 1);",
+    'forArray()' => "ConfigValidator::forArray(\$values, Failure::class)?->requireString('shop.k');",
+    'fully-qualified' => "\\RoundlyConsulting\\PackageToolkit\\Support\\Config::using(Failure::class)->boolean('shop.k');",
+]);
+
+it('reads a strict reader chained off a method that returns a validator', function (): void {
+    expect(scrapeSource(<<<'PHP'
+        use RoundlyConsulting\PackageToolkit\Support\Config;
+        use RoundlyConsulting\PackageToolkit\Support\ConfigValidator;
+
+        final class Settings
+        {
+            public static function a(): int
+            {
+                return self::validator()->integer('shop.a', 1);
+            }
+
+            public static function b(): string
+            {
+                return static::validator()->requireString('shop.b');
+            }
+
+            public function c(): bool
+            {
+                return $this->validator()->boolean('shop.c');
+            }
+
+            private static function validator(): ConfigValidator
+            {
+                return Config::using(Failure::class);
+            }
+        }
+        PHP)['reads'])->toBe(['shop.a', 'shop.b', 'shop.c']);
+});
+
+it('reads a strict reader on a validator held in a typed or assigned variable', function (): void {
+    expect(scrapeSource(<<<'PHP'
+        use RoundlyConsulting\PackageToolkit\Support\Config;
+        use RoundlyConsulting\PackageToolkit\Support\ConfigValidator;
+
+        final class Settings
+        {
+            public function __construct(private readonly ConfigValidator $strict) {}
+
+            public function read(array $values): void
+            {
+                $this->strict->integer('shop.a', 1);
+
+                $read = Config::for($values, Failure::class);
+                $read->enum('shop.b', Mode::class);
+            }
+
+            private static function skew(ConfigValidator $read): int
+            {
+                return $read->integer('shop.c', 0);
+            }
+        }
+        PHP)['reads'])->toBe(['shop.a', 'shop.b', 'shop.c']);
+});
+
+it('proves the leaf of a driver-keyed strict read', function (): void {
+    $result = scrapeSource(<<<'PHP'
+        use RoundlyConsulting\PackageToolkit\Support\Config;
+
+        Config::enum("shop.rate_limits.{$surface}.per", Timespan::class);
+        Config::using(Failure::class)->integer("shop.rate_limits.{$surface}.limit", 60);
+        PHP);
+
+    expect($result['reads'])->toBe(['shop.rate_limits.*.per', 'shop.rate_limits.*.limit'])
+        ->and($result['interpolations'])->toBe([]);
+});
+
+it('flags an unresolvable key handed to a strict reader', function (): void {
+    $result = scrapeSource(<<<'PHP'
+        use RoundlyConsulting\PackageToolkit\Support\Config;
+
+        Config::requireString($this->keyFor('shop.host'));
+        PHP);
+
+    expect($result['reads'])->toBe([])
+        ->and($result['interpolations'])->toHaveCount(1);
+});
+
+/**
+ * `Config::for($values)` validates an array the caller HANDED it: the key only labels the
+ * failure, and the value was read elsewhere — by a read this scrape sees on its own (sentinel,
+ * passkeys: `Config::for(["pkg.{$key}" => $value])->boolean("pkg.{$key}")`). An unresolvable
+ * label hides no read, so flagging it would demand a rewrite for nothing. The same key on a
+ * validator over the REPOSITORY is a read, and stays flagged.
+ */
+it('flags an unresolvable key on a repository validator, never a label on a handed array', function (): void {
+    $handed = scrapeSource(<<<'PHP'
+        use RoundlyConsulting\PackageToolkit\Support\Config;
+        use RoundlyConsulting\PackageToolkit\Support\ConfigValidator;
+
+        Config::for(["shop.{$key}" => $value], Failure::class)->boolean("shop.{$key}");
+        ConfigValidator::forArray($values)->integer($this->keyFor('shop.x'), 1);
+        $read = Config::for($values);
+        $read->enum("shop.{$key}", Mode::class);
+        Config::for(["shop.limits.{$name}" => $value])->integer("shop.limits.{$name}", 1);
+        PHP);
+
+    $repository = scrapeSource(<<<'PHP'
+        use RoundlyConsulting\PackageToolkit\Support\Config;
+
+        Config::using(Failure::class)->boolean("shop.{$key}");
+        PHP);
+
+    expect($handed['interpolations'])->toBe([])
+        ->and($handed['reads'])->toBe(['shop.limits'])
+        ->and($repository['interpolations'])->toBe(['"shop.{$key}"']);
+});
+
+it('reads the key-type and model-resolver seams', function (): void {
+    expect(scrapeSource(<<<'PHP'
+        use RoundlyConsulting\PackageToolkit\Enums\KeyType;
+        use RoundlyConsulting\PackageToolkit\Support\ModelResolver;
+
+        KeyType::fromConfig('shop.key_type');
+        ModelResolver::for('shop.model', Shop::class);
+        ModelResolver::newModel('shop.item_model', default: Item::class);
+        \RoundlyConsulting\PackageToolkit\Support\ModelResolver::for(key: 'shop.order_model');
+        PHP)['reads'])->toBe(['shop.key_type', 'shop.model', 'shop.item_model', 'shop.order_model']);
+});
+
+it('reads the config key a package provider binds or observes from, not the class', function (): void {
+    expect(scrapeSource(<<<'PHP'
+        use RoundlyConsulting\PackageToolkit\PackageServiceProvider;
+
+        final class ShopServiceProvider extends PackageServiceProvider
+        {
+            public function register(): void
+            {
+                parent::register();
+
+                $this->bindFromConfig(TaxResolver::class, 'shop.tax.resolver', ConfigTaxResolver::class);
+                $this->bindFromConfig(contract: Pricer::class, default: Flat::class, configKey: 'shop.pricer');
+                $this->observesModel('shop.model', ShopObserver::class);
+            }
+        }
+        PHP)['reads'])->toBe(['shop.tax.resolver', 'shop.pricer', 'shop.model']);
+});
+
+it('reads the key a ResolvesModels class resolves through', function (): void {
+    expect(scrapeSource(<<<'PHP'
+        use RoundlyConsulting\PackageToolkit\Concerns\ResolvesModels;
+
+        final class Repository
+        {
+            use ResolvesModels;
+
+            public function models(): void
+            {
+                $this->modelClass('shop.model', Shop::class);
+                $this->newModel('shop.item_model');
+            }
+        }
+        PHP)['reads'])->toBe(['shop.model', 'shop.item_model']);
+});
+
+/**
+ * Only the switch is a key. The routes FILE named first (`shop.php`) is shaped exactly like
+ * one, which is the trap a blanket `extraReadPrefixes` fell into (purchases, media-library).
+ */
+it('reads the switch a package declaration names, never the routes file', function (): void {
+    expect(scrapeSource(<<<'PHP'
+        use RoundlyConsulting\PackageToolkit\Package;
+        use RoundlyConsulting\PackageToolkit\PackageServiceProvider;
+
+        final class ShopServiceProvider extends PackageServiceProvider
+        {
+            public function configurePackage(Package $package): void
+            {
+                $package
+                    ->name('shop')
+                    ->hasConfigFile()
+                    ->hasRoutes('shop.php', 'shop.routes.enabled')
+                    ->hasRoutes('shop.webhooks.php', enabledVia: 'shop.webhooks.enabled')
+                    ->hasFacadeAlias(Shop::class, 'shop.facade_alias')
+                    ->hasFacadeAlias(Cart::class);
+            }
+        }
+        PHP)['reads'])->toBe(['shop.routes.enabled', 'shop.webhooks.enabled', 'shop.facade_alias']);
+});
+
+/**
+ * The boundary, as for the injected repository: a reader is recognised by what it IS — the
+ * toolkit class, a validator, a toolkit provider — never by a method name alone. A same-named
+ * method on something else is not a config read, and counting it would invent a read that
+ * blinds the reverse check.
+ */
+it('does not read a same-named method on something that is not a toolkit reader', function (string $source): void {
+    expect(scrapeSource("use App\\Enums\\KeyType;\nuse App\\Support\\ModelResolver;\n{$source}")['reads'])->toBe([]);
+})->with([
+    'another class enum()' => "Rules::enum('shop.a', Mode::class);",
+    'another class using()->integer()' => "Cache::using(Store::class)->integer('shop.a');",
+    'an untyped variable' => "\$cache->requireString('shop.a');",
+    'an unrelated KeyType' => "KeyType::fromConfig('shop.a');",
+    'an unrelated ModelResolver' => "ModelResolver::for('shop.a');",
+    'a binding outside a toolkit provider' => "final class Thing { public function boot(): void { \$this->bindFromConfig(A::class, 'shop.a', B::class); } }",
+    'a binding on another object' => "use RoundlyConsulting\\PackageToolkit\\PackageServiceProvider;\nfinal class P extends PackageServiceProvider { public function boot(): void { \$other->bindFromConfig(A::class, 'shop.a', B::class); } }",
+    'modelClass() without ResolvesModels' => "final class Thing { public function boot(): void { \$this->modelClass('shop.a'); } }",
+    'hasRoutes() off something that is not a Package' => "\$router->group()->hasRoutes('shop.php', 'shop.a');",
+    'the array a validator is handed' => "use RoundlyConsulting\\PackageToolkit\\Support\\Config;\nConfig::for(['shop.a' => \$value]);",
+]);

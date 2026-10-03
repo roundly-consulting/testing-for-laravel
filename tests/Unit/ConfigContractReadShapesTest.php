@@ -47,6 +47,14 @@ it('does not count a lookup on some other service that shares the prefix', funct
 });
 
 // ---------------------------------------------------------------------------
+// package-toolkit-for-laravel's readers.
+// ---------------------------------------------------------------------------
+
+it('proves every shipped key read only through the toolkit readers, with no options', function (): void {
+    expect(contractFailure('toolkit-readers'))->toBe('');
+});
+
+// ---------------------------------------------------------------------------
 // A write is not a read.
 // ---------------------------------------------------------------------------
 

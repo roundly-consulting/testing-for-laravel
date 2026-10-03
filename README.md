@@ -269,11 +269,26 @@ Reads are counted from (with the `get()`/`has()`/`string()`/`integer()`/`boolean
   `app('config')->get(…)`, `app(Repository::class)->get(…)`, `resolve('config')->…`,
   `->make('config')->…`, `$app['config']->…`;
 - each literal key of an array handed to a read method (`->get(['pkg.a' => $default])`);
+- **package-toolkit-for-laravel's readers**, static and chained:
+  - `Config::boolean|integer|enum|oneOf|requireString('pkg.key', …)`;
+  - the same five on a `ConfigValidator` — `Config::using(X::class)->integer('pkg.key', …)`,
+    `Config::for($values)->enum(…)`, `ConfigValidator::forRepository()->…`, a method declared
+    to return one (`self::validator()->…`), or a variable declared or assigned as one;
+  - `KeyType::fromConfig('pkg.key_type')`, `ModelResolver::for('pkg.model')` / `::newModel(…)`,
+    and `$this->modelClass(…)` / `->newModel(…)` in a class using `ResolvesModels`;
+  - in a `PackageServiceProvider`: `$this->bindFromConfig(Contract::class, 'pkg.key', …)`,
+    `$this->observesModel('pkg.model', …)`, and the switch of
+    `$package->hasRoutes('pkg.php', enabledVia: 'pkg.routes.enabled')` /
+    `->hasFacadeAlias(X::class, 'pkg.alias')` — never the routes filename beside it;
 - `sectionVariables` array offsets.
 
 The repository binding is resolved from the **declared type** (or the `'config'` binding the
 expression names), so a `$cache->get('pkg.x')` or `app('cache')->get('pkg.x')` is correctly
-not a config read. An array handed to the **helper** — `config(['pkg.x' => true])` — is a
+not a config read. The toolkit readers are resolved the same way — through the file's imports
+and declared types, never by method name alone — so `Rules::enum('pkg.x')` or an untyped
+`$cache->requireString('pkg.x')` is not a read either. A package's **own** reader that takes the
+key as an argument (`Support\PkgConfig::string('pkg.key', …)`) is not followed: name those keys
+in `extraReadPrefixes`, one exact key per entry. An array handed to the **helper** — `config(['pkg.x' => true])` — is a
 runtime *write*: it is skipped, never counted as a read and never reported as unresolvable.
 
 Forward, a read must land on a shipped path: naming a parent (`config('pkg.rp')`) is fine,

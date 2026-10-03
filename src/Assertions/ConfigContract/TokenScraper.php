@@ -30,8 +30,9 @@ namespace RoundlyConsulting\Testing\Assertions\ConfigContract;
  *   - a `$var['key']` or `$this->prop['key']` array-offset read where the receiver is mapped
  *     to a base path via `sectionVariables` (a package that hands its whole config array to
  *     a DTO reads keys by offset, not through `config()`);
- *   - any literal string under one of `extraReadPrefixes`, wherever it appears
- *     (e.g. `ModelResolver::for('pkg.model')` — not a `config()` call).
+ *   - a literal key handed to one of package-toolkit-for-laravel's readers — see
+ *     {@see self::toolkitRead()} for the full set, static and chained;
+ *   - any literal string under one of `extraReadPrefixes`, wherever it appears.
  *
  * A `.blade.php` file is scraped through {@see BladeSource}: its echoes, directive arguments,
  * component bindings and PHP blocks are read as PHP; its markup, comments, escaped echoes and
@@ -72,6 +73,18 @@ namespace RoundlyConsulting\Testing\Assertions\ConfigContract;
  * is a different type and is not a config read — which is the distinction a name-match or a
  * bare `->get('pkg.…')` prefix-match would both get wrong, in the direction that invents a
  * read and blinds the reverse check.
+ *
+ * ## Toolkit readers
+ *
+ * Every roundly package reads its config through package-toolkit-for-laravel's strict readers
+ * — `Config::enum()`, `Config::using(…)->integer()`, `ModelResolver::for()`, `bindFromConfig()`
+ * — far more often than through a bare `config()`. Only `Config::boolean()` / `integer()` used
+ * to be visible here, so every other reader scraped as *no read*, and the fleet worked around
+ * it with `extraReadPrefixes` (which counts every literal under a prefix, routes filenames
+ * included) or `allowUnread` (which asserts a live key is dead). They are recognised by the
+ * same rule as the injected repository: by what the receiver **is** — the toolkit class
+ * through the file's imports, a declared `ConfigValidator`, a toolkit provider or `Package` —
+ * never by a method name alone.
  */
 final class TokenScraper
 {
@@ -106,6 +119,29 @@ final class TokenScraper
     ];
 
     /**
+     * The toolkit's strict readers — on `Config` statically, and on any `ConfigValidator` —
+     * each taking the key as its first argument. Lowercased: PHP method names are not case
+     * sensitive, so neither is the match.
+     *
+     * @var list<string>
+     */
+    private const array STRICT_READ_METHODS = ['boolean', 'integer', 'enum', 'oneof', 'requirestring'];
+
+    private const string TOOLKIT_CONFIG = 'RoundlyConsulting\PackageToolkit\Support\Config';
+
+    private const string CONFIG_VALIDATOR = 'RoundlyConsulting\PackageToolkit\Support\ConfigValidator';
+
+    private const string MODEL_RESOLVER = 'RoundlyConsulting\PackageToolkit\Support\ModelResolver';
+
+    private const string KEY_TYPE = 'RoundlyConsulting\PackageToolkit\Enums\KeyType';
+
+    private const string PACKAGE = 'RoundlyConsulting\PackageToolkit\Package';
+
+    private const string PACKAGE_PROVIDER = 'RoundlyConsulting\PackageToolkit\PackageServiceProvider';
+
+    private const string RESOLVES_MODELS = 'RoundlyConsulting\PackageToolkit\Concerns\ResolvesModels';
+
+    /**
      * @param  list<string>  $extraReadPrefixes  dotted prefixes whose literals count as reads anywhere
      */
     public function __construct(
@@ -132,7 +168,8 @@ final class TokenScraper
         $prefixedReads = [];
 
         $imports = $this->imports($tokens);
-        $repositories = $this->configRepositoryNames($tokens, $imports);
+        $repositories = $this->typedNames($tokens, $imports, self::CONFIG_REPOSITORIES);
+        $toolkit = $this->toolkitContext($tokens, $imports);
 
         $count = count($tokens);
 
@@ -157,6 +194,18 @@ final class TokenScraper
                 }
 
                 $this->classifyArgument($argument, $reads, $interpolations, $dynamicSections);
+
+                continue;
+            }
+
+            $toolkitRead = $this->toolkitRead($tokens, $i, $imports, $toolkit);
+
+            if ($toolkitRead !== null) {
+                // A validator over a HANDED array (`Config::for($values)`) names its key only to
+                // label the failure: the value was read elsewhere, by a read this scrape sees on
+                // its own. An unresolvable label there hides no read, so it is not flagged.
+                [$key, $handed] = $toolkitRead;
+                $this->classifyArgument($key, $reads, $interpolations, $dynamicSections, flagUnresolvable: ! $handed);
 
                 continue;
             }
@@ -244,7 +293,8 @@ final class TokenScraper
      * import alias of the facade (`use Illuminate\Support\Facades\Config as Settings;`).
      *
      * A bare `Config` counts whatever it is imported as — the fleet's own
-     * `PackageToolkit\Support\Config` helpers read keys by their first argument the same way.
+     * `PackageToolkit\Support\Config` helpers read keys by their first argument the same way,
+     * and so do its strict-only readers (`enum`, `oneOf`, `requireString`).
      *
      * @param  list<array{0: int|null, 1: string}>  $tokens
      * @param  array<string, string>  $imports
@@ -253,7 +303,8 @@ final class TokenScraper
     {
         [$id, $text] = $tokens[$i];
 
-        if ($id !== T_STRING || ! in_array($text, self::READ_METHODS, true)) {
+        if ($id !== T_STRING
+            || (! in_array($text, self::READ_METHODS, true) && ! in_array(strtolower($text), self::STRICT_READ_METHODS, true))) {
             return false;
         }
 
@@ -266,8 +317,19 @@ final class TokenScraper
             return false;
         }
 
-        return $class[1] === 'Config'
-            || in_array($this->resolveName($class[1], $imports), ['Illuminate\Support\Facades\Config', 'Config'], true);
+        return $this->namesConfigClass($class[1], $imports);
+    }
+
+    /**
+     * Whether a class name as written is the `Config` facade or the toolkit's `Config` — bare,
+     * fully-qualified, or under an import alias.
+     *
+     * @param  array<string, string>  $imports
+     */
+    private function namesConfigClass(string $name, array $imports): bool
+    {
+        return $name === 'Config'
+            || in_array($this->resolveName($name, $imports), ['Illuminate\Support\Facades\Config', 'Config', self::TOOLKIT_CONFIG], true);
     }
 
     /**
@@ -348,7 +410,7 @@ final class TokenScraper
      *  - `[...]['config']` — `$app['config']`, `$this->app['config']`, `app()['config']`.
      *
      * Anything else is some other object, and its `->get()` is not a config read — the same
-     * line {@see self::configRepositoryNames()} draws for variables, drawn for expressions.
+     * line {@see self::typedNames()} draws for variables, drawn for expressions.
      *
      * @param  list<array{0: int|null, 1: string}>  $tokens
      * @param  array<string, string>  $imports
@@ -520,7 +582,7 @@ final class TokenScraper
     }
 
     /**
-     * Every name in the file bound to a config repository by a **declared type** — promoted
+     * Every name in the file bound to one of `$types` by a **declared type** — promoted
      * constructor properties (`private readonly Repository $config`), plain properties, and
      * method parameters alike. Returned without the leading `$`, so one set answers for both
      * `$config` and `$this->config`.
@@ -533,9 +595,10 @@ final class TokenScraper
      *
      * @param  list<array{0: int|null, 1: string}>  $tokens
      * @param  array<string, string>  $imports
+     * @param  list<string>  $types  fully-qualified class names
      * @return list<string>
      */
-    private function configRepositoryNames(array $tokens, array $imports): array
+    private function typedNames(array $tokens, array $imports, array $types): array
     {
         $names = [];
         $count = count($tokens);
@@ -555,7 +618,7 @@ final class TokenScraper
                 continue;
             }
 
-            if (in_array($this->resolveName($text, $imports), self::CONFIG_REPOSITORIES, true)) {
+            if (in_array($this->resolveName($text, $imports), $types, true)) {
                 $names[] = ltrim($variable[1], '$');
             }
         }
@@ -564,8 +627,435 @@ final class TokenScraper
     }
 
     /**
+     * What the file declares about the toolkit, collected once so {@see self::toolkitRead()}
+     * can stay a per-token check:
+     *
+     *  - `validatorMethods` — methods declared to return a `ConfigValidator`
+     *    (`private static function validator(): ConfigValidator`), lowercased;
+     *  - `validators` — names holding one, by declared type or by assignment from a validator
+     *    expression (`$read = Config::for($values);`), each mapped to whether it validates a
+     *    handed array (see {@see self::validatorExpression()});
+     *  - `packages` — names typed `Package` (the `configurePackage(Package $package)` builder);
+     *  - `provider` — the file declares a class extending the toolkit's `PackageServiceProvider`;
+     *  - `resolvesModels` — the file imports the toolkit's `ResolvesModels` trait.
+     *
+     * @param  list<array{0: int|null, 1: string}>  $tokens
+     * @param  array<string, string>  $imports
+     * @return array{validatorMethods: list<string>, validators: array<string, bool>, packages: list<string>, provider: bool, resolvesModels: bool}
+     */
+    private function toolkitContext(array $tokens, array $imports): array
+    {
+        $context = [
+            'validatorMethods' => $this->methodsReturning($tokens, $imports, self::CONFIG_VALIDATOR),
+            'validators' => array_fill_keys($this->typedNames($tokens, $imports, [self::CONFIG_VALIDATOR]), false),
+            'packages' => $this->typedNames($tokens, $imports, [self::PACKAGE]),
+            'provider' => false,
+            'resolvesModels' => in_array(self::RESOLVES_MODELS, $imports, true),
+        ];
+
+        $count = count($tokens);
+
+        for ($i = 0; $i < $count; $i++) {
+            $next = $tokens[$i + 1] ?? null;
+
+            if ($tokens[$i][0] === T_EXTENDS && $next !== null
+                && $this->resolveName($next[1], $imports) === self::PACKAGE_PROVIDER) {
+                $context['provider'] = true;
+            }
+
+            // `$read = Config::for($values);` — the validator is assigned, then read through.
+            if ($tokens[$i][0] === T_VARIABLE && $next !== null && $next[1] === '=') {
+                $end = $this->statementEnd($tokens, $i + 2);
+                $expression = $end !== null && $tokens[$end - 1][1] === ')'
+                    ? $this->validatorExpression($tokens, $end - 1, $imports, $context['validatorMethods'])
+                    : null;
+
+                if ($expression !== null && $expression[0] === $i + 2) {
+                    $context['validators'][ltrim($tokens[$i][1], '$')] = $expression[1];
+                }
+            }
+        }
+
+        return $context;
+    }
+
+    /**
+     * Lowercased names of the methods the file declares with return type `$type`.
+     *
+     * @param  list<array{0: int|null, 1: string}>  $tokens
+     * @param  array<string, string>  $imports
+     * @return list<string>
+     */
+    private function methodsReturning(array $tokens, array $imports, string $type): array
+    {
+        $methods = [];
+        $count = count($tokens);
+
+        for ($i = 0; $i < $count; $i++) {
+            if ($tokens[$i][0] !== T_FUNCTION) {
+                continue;
+            }
+
+            $name = $this->memberName($tokens[$i + 1] ?? null);
+            $open = $i + 2;
+
+            if ($name === null || ($tokens[$open][1] ?? null) !== '(') {
+                continue;
+            }
+
+            $close = $this->matchingClose($tokens, $open);
+            $colon = $close === null ? null : ($tokens[$close + 1] ?? null);
+
+            if ($close === null || $colon === null || $colon[1] !== ':') {
+                continue;
+            }
+
+            $returns = $tokens[$close + 2] ?? null;
+
+            if ($returns !== null && $returns[1] === '?') {
+                $returns = $tokens[$close + 3] ?? null;
+            }
+
+            if ($returns !== null && in_array($returns[0], [T_STRING, T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED], true)
+                && $this->resolveName($returns[1], $imports) === $type) {
+                $methods[] = $name;
+            }
+        }
+
+        return $methods;
+    }
+
+    /**
+     * The key argument when the token at $i names one of package-toolkit-for-laravel's config
+     * readers and opens its call, or null. Each is recognised by what its receiver IS:
+     *
+     *  - `ModelResolver::for('k')` / `::newModel('k')`, `KeyType::fromConfig('k')` — the
+     *    toolkit class, resolved through the imports;
+     *  - `->boolean|integer|enum|oneOf|requireString('k')` on a **validator**: the expression
+     *    `Config::using(…)` / `Config::for(…)` / `ConfigValidator::forRepository|forArray(…)`, a
+     *    method declared to return one (`self::validator()->…`), or a name declared or
+     *    assigned as one;
+     *  - `$this->bindFromConfig(Contract::class, 'k', …)` and `$this->observesModel('k', …)` in a
+     *    class extending the toolkit's `PackageServiceProvider`;
+     *  - `$this->modelClass('k')` / `->newModel('k')` in a class using `ResolvesModels`;
+     *  - `->hasRoutes('file.php', 'k')` / `->hasFacadeAlias(X::class, 'k')` on a chain rooted at
+     *    a `Package` — the switch only, never the routes filename beside it.
+     *
+     * (The static `Config::enum('k')` family is {@see self::opensFacadeRead()}'s.) Named
+     * arguments resolve by parameter name, so `enabledVia: 'k'` is found wherever it sits.
+     *
+     * Returned with whether the read validates a handed array rather than the repository.
+     *
+     * @param  list<array{0: int|null, 1: string}>  $tokens
+     * @param  array<string, string>  $imports
+     * @param  array{validatorMethods: list<string>, validators: array<string, bool>, packages: list<string>, provider: bool, resolvesModels: bool}  $context
+     * @return array{0: list<array{0: int|null, 1: string}>, 1: bool}|null
+     */
+    private function toolkitRead(array $tokens, int $i, array $imports, array $context): ?array
+    {
+        $method = $this->memberName($tokens[$i]);
+        $separator = $tokens[$i - 1] ?? null;
+        $receiver = $tokens[$i - 2] ?? null;
+
+        if ($method === null || ($tokens[$i + 1][1] ?? null) !== '(' || $separator === null || $receiver === null) {
+            return null;
+        }
+
+        if ($separator[0] === T_DOUBLE_COLON) {
+            $class = in_array($receiver[0], [T_STRING, T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED, T_STATIC], true)
+                ? $this->resolveName($receiver[1], $imports)
+                : null;
+
+            $reads = ($class === self::MODEL_RESOLVER && in_array($method, ['for', 'newmodel'], true))
+                || ($class === self::KEY_TYPE && $method === 'fromconfig')
+                || ($context['resolvesModels'] && in_array($class, ['self', 'static'], true) && in_array($method, ['modelclass', 'newmodel'], true));
+
+            return $reads ? $this->keyRead($tokens, $i + 1, 0, 'key') : null;
+        }
+
+        if (! in_array($separator[0], [T_OBJECT_OPERATOR, T_NULLSAFE_OBJECT_OPERATOR], true)) {
+            return null;
+        }
+
+        if (in_array($method, self::STRICT_READ_METHODS, true)) {
+            $handed = $this->validatorReceiver($tokens, $i - 2, $imports, $context);
+
+            return $handed === null ? null : $this->keyRead($tokens, $i + 1, 0, 'key', $handed);
+        }
+
+        $onThis = $receiver[0] === T_VARIABLE && $receiver[1] === '$this';
+
+        return match (true) {
+            $onThis && $context['provider'] && $method === 'bindfromconfig' => $this->keyRead($tokens, $i + 1, 1, 'configKey'),
+            $onThis && $context['provider'] && $method === 'observesmodel' => $this->keyRead($tokens, $i + 1, 0, 'configKey'),
+            $onThis && $context['resolvesModels'] && in_array($method, ['modelclass', 'newmodel'], true) => $this->keyRead($tokens, $i + 1, 0, 'key'),
+            $method === 'hasroutes' && $this->chainedOffPackage($tokens, $i - 2, $context['packages']) => $this->keyRead($tokens, $i + 1, 1, 'enabledVia'),
+            $method === 'hasfacadealias' && $this->chainedOffPackage($tokens, $i - 2, $context['packages']) => $this->keyRead($tokens, $i + 1, 1, 'configKey'),
+            default => null,
+        };
+    }
+
+    /**
+     * Whether the receiver ending at $end — the token left of `->` — is a `ConfigValidator`:
+     * null when it is not, else whether it validates a handed array. A validator expression,
+     * or a local / `$this->` property declared or assigned as one.
+     *
+     * @param  list<array{0: int|null, 1: string}>  $tokens
+     * @param  array<string, string>  $imports
+     * @param  array{validatorMethods: list<string>, validators: array<string, bool>, packages: list<string>, provider: bool, resolvesModels: bool}  $context
+     */
+    private function validatorReceiver(array $tokens, int $end, array $imports, array $context): ?bool
+    {
+        $receiver = $tokens[$end];
+
+        if ($receiver[1] === ')') {
+            return $this->validatorExpression($tokens, $end, $imports, $context['validatorMethods'])[1] ?? null;
+        }
+
+        if ($receiver[0] === T_VARIABLE) {
+            return $context['validators'][ltrim($receiver[1], '$')] ?? null;
+        }
+
+        $arrow = $tokens[$end - 1] ?? null;
+        $object = $tokens[$end - 2] ?? null;
+
+        $property = $receiver[0] === T_STRING
+            && $arrow !== null && in_array($arrow[0], [T_OBJECT_OPERATOR, T_NULLSAFE_OBJECT_OPERATOR], true)
+            && $object !== null && $object[1] === '$this';
+
+        return $property ? ($context['validators'][$receiver[1]] ?? null) : null;
+    }
+
+    /**
+     * Where the validator expression closing at $close starts, and whether it validates a
+     * **handed** array — or null when the call closing there does not yield a
+     * `ConfigValidator`:
+     *
+     *  - `Config::using(…)` on the toolkit's `Config` / `ConfigValidator::forRepository(…)` —
+     *    the config repository;
+     *  - `Config::for(…)` / `ConfigValidator::forArray(…)` — a handed array;
+     *  - `self::m(…)` / `static::m(…)` / `$this->m(…)` where `m` is declared to return one —
+     *    taken as the repository, the conservative side: its unresolvable keys stay flagged.
+     *
+     * @param  list<array{0: int|null, 1: string}>  $tokens
+     * @param  array<string, string>  $imports
+     * @param  list<string>  $validatorMethods
+     * @return array{0: int, 1: bool}|null
+     */
+    private function validatorExpression(array $tokens, int $close, array $imports, array $validatorMethods): ?array
+    {
+        $open = $this->matchingOpen($tokens, $close, '(', ')');
+
+        if ($open === null) {
+            return null;
+        }
+
+        $method = $this->memberName($tokens[$open - 1] ?? null);
+        $separator = $tokens[$open - 2] ?? null;
+        $receiver = $tokens[$open - 3] ?? null;
+
+        if ($method === null || $separator === null || $receiver === null) {
+            return null;
+        }
+
+        if ($separator[0] === T_DOUBLE_COLON) {
+            $class = $this->resolveName($receiver[1], $imports);
+            $toolkitConfig = $this->namesConfigClass($receiver[1], $imports) && $class !== 'Illuminate\Support\Facades\Config';
+
+            return match (true) {
+                $toolkitConfig && $method === 'using', $class === self::CONFIG_VALIDATOR && $method === 'forrepository' => [$open - 3, false],
+                $toolkitConfig && $method === 'for', $class === self::CONFIG_VALIDATOR && $method === 'forarray' => [$open - 3, true],
+                in_array($receiver[1], ['self', 'static'], true) && in_array($method, $validatorMethods, true) => [$open - 3, false],
+                default => null,
+            };
+        }
+
+        return in_array($separator[0], [T_OBJECT_OPERATOR, T_NULLSAFE_OBJECT_OPERATOR], true)
+            && $receiver[1] === '$this' && in_array($method, $validatorMethods, true)
+            ? [$open - 3, false]
+            : null;
+    }
+
+    /**
+     * Whether the fluent chain whose last receiver ends at $end is rooted at a name typed
+     * `Package` — walking back over every `->method(…)` link to the variable that starts it.
+     *
+     * @param  list<array{0: int|null, 1: string}>  $tokens
+     * @param  list<string>  $packages
+     */
+    private function chainedOffPackage(array $tokens, int $end, array $packages): bool
+    {
+        $position = $end;
+
+        while (($tokens[$position] ?? null) !== null && $tokens[$position][1] === ')') {
+            $open = $this->matchingOpen($tokens, $position, '(', ')');
+            $arrow = $open === null ? null : ($tokens[$open - 2] ?? null);
+
+            if ($open === null || $this->memberName($tokens[$open - 1] ?? null) === null
+                || $arrow === null || ! in_array($arrow[0], [T_OBJECT_OPERATOR, T_NULLSAFE_OBJECT_OPERATOR], true)) {
+                return false;
+            }
+
+            $position = $open - 3;
+        }
+
+        $root = $tokens[$position] ?? null;
+
+        return $root !== null && $root[0] === T_VARIABLE && in_array(ltrim($root[1], '$'), $packages, true);
+    }
+
+    /**
+     * {@see self::callArgument()} paired with whether it validates a handed array, or null
+     * when the call has no such argument.
+     *
+     * @param  list<array{0: int|null, 1: string}>  $tokens
+     * @return array{0: list<array{0: int|null, 1: string}>, 1: bool}|null
+     */
+    private function keyRead(array $tokens, int $open, int $position, string $parameter, bool $handed = false): ?array
+    {
+        $argument = $this->callArgument($tokens, $open, $position, $parameter);
+
+        return $argument === null ? null : [$argument, $handed];
+    }
+
+    /**
+     * The tokens of one argument of the call whose `(` is at $open: the named argument
+     * `$parameter:` when the call names it, else the one at `$position`. Null when absent.
+     *
+     * @param  list<array{0: int|null, 1: string}>  $tokens
+     * @return list<array{0: int|null, 1: string}>|null
+     */
+    private function callArgument(array $tokens, int $open, int $position, string $parameter): ?array
+    {
+        $positional = [];
+
+        foreach ($this->callArguments($tokens, $open) as $argument) {
+            // `name: value` — an identifier, then a lone `:` (`::` is its own token).
+            if (count($argument) > 2 && $argument[1][1] === ':' && preg_match('/^[A-Za-z_]\w*$/', $argument[0][1]) === 1) {
+                if ($argument[0][1] === $parameter) {
+                    return array_slice($argument, 2);
+                }
+
+                continue;
+            }
+
+            $positional[] = $argument;
+        }
+
+        return $positional[$position] ?? null;
+    }
+
+    /**
+     * The top-level arguments of the call whose `(` is at $open, each as its tokens.
+     *
+     * @param  list<array{0: int|null, 1: string}>  $tokens
+     * @return list<list<array{0: int|null, 1: string}>>
+     */
+    private function callArguments(array $tokens, int $open): array
+    {
+        $arguments = [];
+        $current = [];
+        $depth = 0;
+        $count = count($tokens);
+
+        for ($j = $open; $j < $count; $j++) {
+            [$id, $text] = $tokens[$j];
+
+            if (in_array($text, ['(', '[', '{'], true) || $id === T_CURLY_OPEN || $id === T_DOLLAR_OPEN_CURLY_BRACES) {
+                if (++$depth === 1) {
+                    continue;
+                }
+            } elseif (in_array($text, [')', ']', '}'], true)) {
+                if (--$depth === 0) {
+                    break;
+                }
+            } elseif ($text === ',' && $depth === 1) {
+                $arguments[] = $current;
+                $current = [];
+
+                continue;
+            }
+
+            $current[] = $tokens[$j];
+        }
+
+        // A trailing comma leaves nothing behind it, and nothing is not an argument.
+        if ($current !== []) {
+            $arguments[] = $current;
+        }
+
+        return $arguments;
+    }
+
+    /**
+     * The index of the `;` ending the statement that continues at $start, or null.
+     *
+     * @param  list<array{0: int|null, 1: string}>  $tokens
+     */
+    private function statementEnd(array $tokens, int $start): ?int
+    {
+        $depth = 0;
+        $count = count($tokens);
+
+        for ($j = $start; $j < $count; $j++) {
+            $text = $tokens[$j][1];
+
+            if (in_array($text, ['(', '[', '{'], true) || $tokens[$j][0] === T_CURLY_OPEN || $tokens[$j][0] === T_DOLLAR_OPEN_CURLY_BRACES) {
+                $depth++;
+            } elseif (in_array($text, [')', ']', '}'], true)) {
+                if (--$depth < 0) {
+                    return null;
+                }
+            } elseif ($text === ';' && $depth === 0) {
+                return $j;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The index of the bracket closing the one that opens at $open, or null if unbalanced.
+     *
+     * @param  list<array{0: int|null, 1: string}>  $tokens
+     */
+    private function matchingClose(array $tokens, int $open): ?int
+    {
+        $depth = 0;
+        $count = count($tokens);
+
+        for ($j = $open; $j < $count; $j++) {
+            if ($tokens[$j][1] === '(') {
+                $depth++;
+            } elseif ($tokens[$j][1] === ')' && --$depth === 0) {
+                return $j;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * A method name as written after `->`, `::` or `function`, lowercased — or null when the
+     * token is not an identifier. After `::` and `function` PHP keeps a reserved word's own
+     * token (`ModelResolver::for` is `T_FOR`), so the text decides, not the token id.
+     *
+     * @param  array{0: int|null, 1: string}|null  $token
+     */
+    private function memberName(?array $token): ?string
+    {
+        return $token !== null && $token[0] !== null && preg_match('/^[A-Za-z_]\w*$/', $token[1]) === 1
+            ? strtolower($token[1])
+            : null;
+    }
+
+    /**
      * The file's `use` imports, keyed by lowercased alias — so `use ... Repository as Cfg;`
      * and a plain `use ... Repository;` both resolve.
+     *
+     * Only a `use` outside every class body is an import. Inside one it is a trait use
+     * (`use ResolvesModels;`), and reading it as an import would rebind the alias to the bare
+     * short name — un-resolving the real import of the same name above it.
      *
      * @param  list<array{0: int|null, 1: string}>  $tokens
      * @return array<string, string>
@@ -574,9 +1064,33 @@ final class TokenScraper
     {
         $imports = [];
         $count = count($tokens);
+        $braces = [];
+        $namespaceOpen = false;
 
         for ($i = 0; $i < $count; $i++) {
-            if ($tokens[$i][0] !== T_USE) {
+            [$id, $text] = $tokens[$i];
+
+            if ($id === T_NAMESPACE) {
+                $namespaceOpen = true;
+            } elseif ($text === ';') {
+                $namespaceOpen = false;
+            }
+
+            if ($text === '{' || $id === T_CURLY_OPEN || $id === T_DOLLAR_OPEN_CURLY_BRACES) {
+                // A braced `namespace Foo { … }` still holds imports; any other brace does not.
+                $braces[] = $namespaceOpen;
+                $namespaceOpen = false;
+
+                continue;
+            }
+
+            if ($text === '}') {
+                array_pop($braces);
+
+                continue;
+            }
+
+            if ($id !== T_USE || in_array(false, $braces, true)) {
                 continue;
             }
 
@@ -668,8 +1182,9 @@ final class TokenScraper
      * @param  list<string>  $reads
      * @param  list<string>  $interpolations
      * @param  list<string>  $dynamicSections
+     * @param  bool  $flagUnresolvable  false where an unresolvable key hides no read (a label)
      */
-    private function classifyArgument(array $argument, array &$reads, array &$interpolations, array &$dynamicSections): void
+    private function classifyArgument(array $argument, array &$reads, array &$interpolations, array &$dynamicSections, bool $flagUnresolvable = true): void
     {
         if (count($argument) === 1 && $argument[0][0] === T_CONSTANT_ENCAPSED_STRING) {
             $value = $this->stringValue($argument[0][1]);
@@ -687,7 +1202,7 @@ final class TokenScraper
         // Not built from literals and holes at all (`config($this->keyFor('x'))`) — report it
         // only if some literal fragment claims this prefix, else it is another prefix's key.
         if ($skeleton === null) {
-            if ($this->mentionsPrefix($argument)) {
+            if ($flagUnresolvable && $this->mentionsPrefix($argument)) {
                 $interpolations[] = $snippet;
             }
 
@@ -703,7 +1218,9 @@ final class TokenScraper
         // A hole that does not fill a whole segment (`"pkg.drivers.{$name}x"`) cannot be
         // reasoned about segment-wise, and guessing is how a check starts lying.
         if ($pattern === null) {
-            $interpolations[] = $snippet;
+            if ($flagUnresolvable) {
+                $interpolations[] = $snippet;
+            }
 
             return;
         }
@@ -719,7 +1236,9 @@ final class TokenScraper
         // it. Degrading that would trade a precise error for a vacuous read, so the most
         // opaque shape of all stays unresolvable and keeps its pressure to name a literal.
         if ($stripped === $this->prefix) {
-            $interpolations[] = $snippet;
+            if ($flagUnresolvable) {
+                $interpolations[] = $snippet;
+            }
 
             return;
         }

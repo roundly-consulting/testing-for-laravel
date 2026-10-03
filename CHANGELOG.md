@@ -24,7 +24,8 @@ Initial public release.
 - Publish-only migration guards: `toNotAutoLoadMigrations()` and `toPublishMigrationsTimestamped()`.
 - A both-directions config contract, `toSatisfyConfigContract()`, that flags undocumented and
   unused config keys — read from `config()`, the `Config` facade and the repository in any
-  spelling, in PHP and in Blade views.
+  spelling, from package-toolkit-for-laravel's readers (static and chained), in PHP and in
+  Blade views.
 - A secret-safe `about` capture (`toLeakNoSecrets()`) and a model-swap proof
   (`toHonourModelSwap()`, `toBeSwappableVia()`).
 - A facade-contract pin for the Actions → Manager → Facade convention:
