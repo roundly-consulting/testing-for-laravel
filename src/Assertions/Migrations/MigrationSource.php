@@ -39,6 +39,67 @@ final class MigrationSource
     }
 
     /**
+     * The source with the body of every method named $name emptied — `function down() {}`.
+     *
+     * The order pin reads the forward run. A `down()` that re-creates what `up()` dropped is
+     * not a CREATE on the way to a migrated schema, and a key inside it is not a key the set
+     * declares. Matched by token, case-insensitively (PHP method names are), so a call
+     * `$this->down()` or a string 'down' is left alone.
+     */
+    public static function withoutMethod(string $source, string $name): string
+    {
+        $tokens = token_get_all($source);
+        $count = count($tokens);
+        $clean = '';
+
+        for ($i = 0; $i < $count; $i++) {
+            $clean .= is_array($tokens[$i]) ? $tokens[$i][1] : $tokens[$i];
+
+            if (! is_array($tokens[$i]) || $tokens[$i][0] !== T_FUNCTION) {
+                continue;
+            }
+
+            $j = $i + 1;
+
+            while ($j < $count && is_array($tokens[$j]) && $tokens[$j][0] === T_WHITESPACE) {
+                $j++;
+            }
+
+            if (! isset($tokens[$j]) || ! is_array($tokens[$j]) || strtolower($tokens[$j][1]) !== strtolower($name)) {
+                continue;
+            }
+
+            // Copy the signature through to the body's `{`, then skip to its matching `}`. A
+            // declaration with no body (`;` first) has nothing to empty.
+            while ($j < $count && $tokens[$j] !== '{' && $tokens[$j] !== ';') {
+                $j++;
+            }
+
+            if (($tokens[$j] ?? ';') === ';') {
+                continue;
+            }
+
+            for ($k = $i + 1; $k <= $j && $k < $count; $k++) {
+                $clean .= is_array($tokens[$k]) ? $tokens[$k][1] : $tokens[$k];
+            }
+
+            $depth = 1;
+
+            for ($j++; $j < $count && $depth > 0; $j++) {
+                $text = is_array($tokens[$j]) ? $tokens[$j][1] : $tokens[$j];
+                $opens = $text === '{' || (is_array($tokens[$j]) && in_array($tokens[$j][0], [T_CURLY_OPEN, T_DOLLAR_OPEN_CURLY_BRACES], true));
+
+                $depth += $opens ? 1 : ($text === '}' ? -1 : 0);
+            }
+
+            $clean .= '}';
+            $i = $j - 1;
+        }
+
+        return $clean;
+    }
+
+    /**
      * The `use` imports of a file, keyed by lowercased alias — so `use App\Models\Author;` and
      * `use App\Models\Imprint as Publisher;` both resolve a `::class` reference.
      *

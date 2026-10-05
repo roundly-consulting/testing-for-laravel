@@ -182,3 +182,28 @@ it('fails a set with no Schema::create()/table() block to order', function (): v
     expect(fn (): mixed => expect(fixturePath('broken/no-schema-blocks'))->toHaveRunnableMigrationOrder(foreignKeys: 0))
         ->toThrow(AssertionFailedError::class, 'no Schema::create() or Schema::table() block');
 });
+
+// ---------------------------------------------------------------------------
+// A table's life: created, maybe dropped, maybe created again — read from up() only.
+// ---------------------------------------------------------------------------
+
+it('fails a second create without a drop; accepts drop-and-recreate; ignores down()', function (): void {
+    // Two CREATEs of `things` with no drop between them: every engine refuses the second.
+    expect(fn (): mixed => expect(fixturePath('broken/duplicate-table'))->toHaveRunnableMigrationOrder(foreignKeys: 0))
+        ->toThrow(AssertionFailedError::class, '`things` is created twice with no drop in between');
+
+    // 0003's up() drops `legacy_tags` and its down() creates it again (with a key onto a table
+    // nothing creates). down() never runs on the way up, so neither the CREATE nor the key in
+    // it may count — the key in 0002 ran against the CREATE live at its ordinal, 0001's.
+    expect(fixturePath('green/drop-in-up'))->toHaveRunnableMigrationOrder(foreignKeys: 1);
+
+    // create → alter → dropIfExists + create: the ALTER ran against the FIRST create.
+    expect(fixturePath('green/rebuild'))->toHaveRunnableMigrationOrder(foreignKeys: 1);
+});
+
+it('fails a key onto, or an ALTER of, a table that has been dropped', function (): void {
+    expect(fn (): mixed => expect(fixturePath('broken/key-after-drop'))->toHaveRunnableMigrationOrder(foreignKeys: 1))
+        ->toThrow(AssertionFailedError::class, '`posts` references `tags`, which is dropped before it')
+        ->and(fn (): mixed => expect(fixturePath('broken/alter-after-drop'))->toHaveRunnableMigrationOrder(foreignKeys: 0))
+        ->toThrow(AssertionFailedError::class, '`tags` is altered after it is dropped');
+});

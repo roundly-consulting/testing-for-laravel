@@ -26,6 +26,17 @@ use PHPUnit\Framework\Assert;
  * the same two blocks the other way round do not. Comparing file indices called both
  * broken.
  *
+ * ## A table's life, read from `up()` only
+ *
+ * A table is not created once and for all: a forward-only migration may `Schema::drop()` /
+ * `Schema::dropIfExists()` it and create it again. Each table therefore carries its
+ * *lifetimes* — create ordinal to drop ordinal — and every ALTER and key is checked against
+ * the lifetime live **at its own ordinal**, not against whichever CREATE came last. A second
+ * CREATE while the first is still live fails: every engine refuses it.
+ *
+ * Only the forward run counts. `down()` is removed before parsing, so a rollback that
+ * re-creates a table the same migration's `up()` dropped is not mistaken for a CREATE.
+ *
  * ## Tables the set does not own
  *
  * `$externalTables` names tables that exist before this set runs — the host app's `users`,
@@ -40,8 +51,8 @@ use PHPUnit\Framework\Assert;
  */
 final class MigrationGraph
 {
-    /** @var array<string, int> table name => ordinal of the Schema block that creates it */
-    private array $createdAt = [];
+    /** @var array<string, list<array{from: int, to: int|null}>> table name => its lifetimes, in run order */
+    private array $lifetimes = [];
 
     /** @var list<ForeignKeyEdge> */
     private array $edges = [];
@@ -74,7 +85,7 @@ final class MigrationGraph
         foreach ($this->externalTables as $external) {
             Assert::assertArrayNotHasKey(
                 $external,
-                $this->createdAt,
+                $this->lifetimes,
                 "`{$external}` is declared in externalTables, but this migration set creates it. An external "
                 .'table exists before the set runs; one the set creates is ordered like any other. Remove it.',
             );
@@ -87,17 +98,17 @@ final class MigrationGraph
 
             Assert::assertArrayHasKey(
                 $alter['table'],
-                $this->createdAt,
+                $this->lifetimes,
                 "`{$alter['table']}` is altered by a migration with no matching Schema::create(). If the table "
                 .'belongs to the host app or another package, declare it: externalTables: [\''.$alter['table'].'\'].',
             );
 
-            // A Schema::table() ALTER must run after the CREATE of its table.
-            Assert::assertLessThanOrEqual(
-                $alter['at'],
-                $this->createdAt[$alter['table']],
-                "`{$alter['table']}` is altered before it is created.",
-            );
+            // A Schema::table() ALTER must run while its table exists: after a CREATE, before a drop.
+            if (! $this->liveAt($alter['table'], $alter['at'])) {
+                Assert::fail($this->createdBefore($alter['table'], $alter['at'])
+                    ? "`{$alter['table']}` is altered after it is dropped."
+                    : "`{$alter['table']}` is altered before it is created.");
+            }
         }
 
         if ($expectedForeignKeys !== null) {
@@ -115,7 +126,7 @@ final class MigrationGraph
 
             Assert::assertArrayHasKey(
                 $edge->parent,
-                $this->createdAt,
+                $this->lifetimes,
                 "`{$edge->child}` references `{$edge->parent}`, which no migration creates. If the table belongs "
                 .'to the host app or another package, declare it: externalTables: [\''.$edge->parent.'\'].',
             );
@@ -123,20 +134,19 @@ final class MigrationGraph
             if ($edge->isSelfReferencing()) {
                 // A self-referencing key is satisfied by the table's own CREATE block or a
                 // later ALTER — never by a table created afterwards.
-                Assert::assertLessThanOrEqual(
-                    $edge->at,
-                    $this->createdAt[$edge->parent],
+                Assert::assertTrue(
+                    $this->liveAt($edge->parent, $edge->at, inclusive: true),
                     "`{$edge->child}` self-references a table created after its own migration.",
                 );
 
                 continue;
             }
 
-            Assert::assertLessThan(
-                $edge->at,
-                $this->createdAt[$edge->parent],
-                "`{$edge->child}` references `{$edge->parent}`, which must be created first.",
-            );
+            if (! $this->liveAt($edge->parent, $edge->at)) {
+                Assert::fail($this->createdBefore($edge->parent, $edge->at)
+                    ? "`{$edge->child}` references `{$edge->parent}`, which is dropped before it."
+                    : "`{$edge->child}` references `{$edge->parent}`, which must be created first.");
+            }
         }
 
         $this->assertExternalTablesAreUsed();
@@ -144,7 +154,65 @@ final class MigrationGraph
 
     private function isExternal(string $table): bool
     {
-        return in_array($table, $this->externalTables, true) && ! array_key_exists($table, $this->createdAt);
+        return in_array($table, $this->externalTables, true) && ! array_key_exists($table, $this->lifetimes);
+    }
+
+    /**
+     * Whether $table exists at ordinal $at: some lifetime began before it (at it, when
+     * $inclusive — a table's own CREATE block satisfies its self-reference) and had not ended.
+     */
+    private function liveAt(string $table, int $at, bool $inclusive = false): bool
+    {
+        foreach ($this->lifetimes[$table] ?? [] as $life) {
+            $begun = $inclusive ? $life['from'] <= $at : $life['from'] < $at;
+
+            if ($begun && ($life['to'] === null || $life['to'] >= $at)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function createdBefore(string $table, int $at): bool
+    {
+        foreach ($this->lifetimes[$table] ?? [] as $life) {
+            if ($life['from'] < $at) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Begin a lifetime of $table at $at. A CREATE while the table is still live is refused by
+     * every engine, so the set is not runnable.
+     */
+    private function begin(string $table, int $at): void
+    {
+        $lives = $this->lifetimes[$table] ?? [];
+        $last = $lives === [] ? null : $lives[array_key_last($lives)];
+
+        Assert::assertFalse(
+            $last !== null && $last['to'] === null,
+            "`{$table}` is created twice with no drop in between — the second Schema::create() fails on every engine.",
+        );
+
+        $this->lifetimes[$table][] = ['from' => $at, 'to' => null];
+    }
+
+    /**
+     * End the live lifetime of $table at $at. Dropping a table the set never created (a
+     * `dropIfExists()` of a host table, or of nothing) ends nothing.
+     */
+    private function end(string $table, int $at): void
+    {
+        $last = array_key_last($this->lifetimes[$table] ?? []);
+
+        if ($last !== null && $this->lifetimes[$table][$last]['to'] === null) {
+            $this->lifetimes[$table][$last]['to'] = $at;
+        }
     }
 
     /**
@@ -186,16 +254,26 @@ final class MigrationGraph
         $ordinal = 0;
         $parsed = [];
 
-        // Pass one numbers every block in run order and records every CREATE across the whole
-        // directory, so ALTER and key validation can see a CREATE that (wrongly) runs *after*.
+        $ordered = 0;
+
+        // Pass one numbers every block in run order and records every table's lifetimes across
+        // the whole directory, so ALTER and key validation can see a CREATE that (wrongly) runs
+        // *after*. Only up() is read: down() never runs on the way to a migrated schema.
         foreach ($files as $file) {
-            $source = MigrationSource::withoutComments((string) file_get_contents($file));
+            $source = MigrationSource::withoutMethod(
+                MigrationSource::withoutComments((string) file_get_contents($file)),
+                'down',
+            );
             $blocks = $this->blocks($source, $file, $ordinal);
 
             foreach ($blocks as $block) {
-                if ($block['kind'] === 'create') {
-                    $this->createdAt[$block['table']] = $block['at'];
-                }
+                match ($block['kind']) {
+                    'create' => $this->begin($block['table'], $block['at']),
+                    'drop' => $this->end($block['table'], $block['at']),
+                    default => null,
+                };
+
+                $ordered += in_array($block['kind'], ['create', 'table'], true) ? 1 : 0;
             }
 
             $parsed[] = [$file, $source, $blocks];
@@ -203,7 +281,7 @@ final class MigrationGraph
 
         Assert::assertGreaterThan(
             0,
-            $ordinal,
+            $ordered,
             "The migrations in {$directory} hold no Schema::create() or Schema::table() block, so there "
             .'is no order to pin — a pass would be a verdict over an empty parse.',
         );
@@ -216,6 +294,12 @@ final class MigrationGraph
             foreach ($blocks as $block) {
                 if ($block['kind'] === 'table') {
                     $this->alters[] = ['table' => $block['table'], 'at' => $block['at']];
+                }
+
+                // A drop declares no column. A key after it in the same span has no block to
+                // belong to, so it stays unparsed and the guard below names it.
+                if ($block['kind'] === 'drop') {
+                    continue;
                 }
 
                 [$constrainedHere, $referencesHere] = $this->parseEdges($block, $imports, basename($file));
@@ -240,9 +324,9 @@ final class MigrationGraph
     }
 
     /**
-     * Split a migration file into its Schema::create()/table() blocks, each carrying
-     * the table it operates on, its ordinal in run order and the source span up to the
-     * next block.
+     * Split a migration file into its Schema::create()/table()/drop()/dropIfExists() blocks,
+     * each carrying the table it operates on, its ordinal in run order and the source span up
+     * to the next block. Both drops normalise to the kind `drop`.
      *
      * @return list<array{kind: string, table: string, body: string, at: int}>
      */
@@ -253,7 +337,7 @@ final class MigrationGraph
         $argument = '((?:[^(),]|\([^()]*\))*?)';
 
         preg_match_all(
-            '/Schema::(create|table)\(\s*'.$argument.'\s*,/',
+            '/Schema::(create|table|dropIfExists|drop)\(\s*'.$argument.'\s*[,)]/',
             $body,
             $matches,
             PREG_OFFSET_CAPTURE | PREG_SET_ORDER,
@@ -267,7 +351,7 @@ final class MigrationGraph
             $end = $position + 1 < $total ? (int) $matches[$position + 1][0][1] : strlen($body);
 
             $blocks[] = [
-                'kind' => (string) $match[1][0],
+                'kind' => str_starts_with((string) $match[1][0], 'drop') ? 'drop' : (string) $match[1][0],
                 'table' => $this->resolver->resolveSchemaTable((string) $match[2][0], basename($file)),
                 'body' => substr($body, $start, $end - $start),
                 'at' => $ordinal++,

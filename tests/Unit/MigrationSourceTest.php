@@ -69,3 +69,27 @@ it('binds named, positional and null arguments like PHP does', function (): void
         ->and(CallArgument::bound([new CallArgument(null, 'NULL')], 'table', 0))->toBeNull()
         ->and(CallArgument::bound([new CallArgument('table', 'null')], 'table', 0))->toBeNull();
 });
+
+it('empties every down() body and nothing else', function (): void {
+    $source = <<<'PHP'
+        <?php
+        abstract class Base { abstract public function down(): void; public function up(): void { Schema::create('a', fn () => null); } }
+        return new class extends Base
+        {
+            public function up(): void { $this->down(); Schema::create('kept', fn ($t) => "{$t}"); }
+            public function DOWN(): void { if (true) { Schema::create('gone', fn ($t) => "{$t} ${t}"); } }
+        };
+        PHP;
+
+    $clean = MigrationSource::withoutMethod($source, 'down');
+
+    // The body-less abstract declaration stays as written — it has no body to empty, and must
+    // not swallow the next method's body looking for one.
+    expect($clean)->toContain('abstract public function down(): void;')
+        ->and($clean)->toContain("Schema::create('a'")
+        ->and($clean)->toContain('$this->down();')
+        ->and($clean)->toContain("Schema::create('kept'")
+        ->and($clean)->toContain('public function DOWN(): void {}')
+        ->and($clean)->not->toContain("'gone'")
+        ->and(token_get_all($clean))->not->toBeEmpty();
+});

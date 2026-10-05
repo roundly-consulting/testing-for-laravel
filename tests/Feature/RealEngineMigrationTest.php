@@ -184,3 +184,11 @@ it('applies the same-file and every-FK-form sets on postgres, and rejects the sa
         ->and(fixturePath('broken/same-file-child-first'))
         ->toRejectBrokenOrderOnConnection(fn (array $files): array => $files, 'pgsql');
 })->skip(fn (): bool => ! test()->connectionAvailable('pgsql'), 'pgsql connection not available');
+
+it('applies the drop-and-recreate sets the order pin accepts', function (): void {
+    // The lifetime model is only honest if a real run agrees: both sets apply, and the
+    // duplicate CREATE the pin refuses is refused by the engine too (see 'bites when a
+    // migration fails to apply').
+    expect(fixturePath('green/drop-in-up'))->toApplyOnConnection('sqlite_real', migrations: 3)
+        ->and(fixturePath('green/rebuild'))->toApplyOnConnection('sqlite_real', migrations: 3);
+});
