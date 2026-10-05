@@ -226,13 +226,16 @@ final class DriverMatrix
      *
      * A sqlite leg is the exception: sqlite has no location of its own, so a
      * `TESTING_DB_*` set beside it can only be describing a real engine the suite means
-     * to reach — a postgres service running next to a sqlite leg.
+     * to reach — a postgres service running next to a sqlite leg. It describes **postgres
+     * only**: postgres is the fleet's real-engine leg, and handing the same location to the
+     * mysql probe as well pointed it at that Postgres — the 60-second handshake hang above,
+     * four times over per availability check. A MySQL run sets `TESTING_DB_DRIVER=mysql`.
      */
     private static function locationDescribes(string $driver): bool
     {
         $leg = self::driver();
 
-        return $leg === $driver || $leg === 'sqlite';
+        return $leg === $driver || ($leg === 'sqlite' && $driver === 'pgsql');
     }
 
     /**

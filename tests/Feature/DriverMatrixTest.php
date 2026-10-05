@@ -200,3 +200,20 @@ it('fails loudly when TESTING_DB_DRIVER names an unknown driver', function (): v
     expect($known->isSuccessful())->toBeTrue()
         ->and($known->getOutput())->toBe('pgsql');
 });
+
+it('does not hand a sqlite-leg location to the mysql probe', function (): void {
+    // A sqlite leg with a Postgres location beside it (TESTING_DB_PORT=5432): the location
+    // describes that Postgres. Handed to mysql too, the probe dialled Postgres and waited on a
+    // MySQL handshake — 240 seconds per availability check, measured.
+    $configs = new Process(
+        [PHP_BINARY, '-r', 'require "vendor/autoload.php"; use RoundlyConsulting\Testing\Database\DriverMatrix as M; echo json_encode([M::connectionConfig("pgsql"), M::connectionConfig("mysql")]);'],
+        dirname(__DIR__, 2),
+        ['TESTING_DB_DRIVER' => false, 'TESTING_DB_HOST' => '10.9.9.9', 'TESTING_DB_PORT' => '5432', 'TESTING_DB_USERNAME' => 'ci'],
+    );
+    $configs->mustRun();
+
+    [$pgsql, $mysql] = json_decode($configs->getOutput(), true, flags: JSON_THROW_ON_ERROR);
+
+    expect($pgsql)->toMatchArray(['host' => '10.9.9.9', 'port' => '5432', 'username' => 'ci'])
+        ->and($mysql)->toMatchArray(['host' => '127.0.0.1', 'port' => '3306', 'username' => 'root']);
+});
