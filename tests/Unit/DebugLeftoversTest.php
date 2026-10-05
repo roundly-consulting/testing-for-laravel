@@ -96,3 +96,16 @@ it('catches DD()/Var_Dump() regardless of case', function () use ($fixture): voi
 it('does not mistake an instantiated or static class for a debug call', function () use ($fixture): void {
     DebugLeftovers::assert($fixture('green-case'));
 });
+
+it('exempts a trait/enum by name and by namespace', function () use ($fixture): void {
+    // Unexempted, both are reported — the exemption below is what silences them.
+    expect(fn () => DebugLeftovers::assert($fixture('non-class')))
+        ->toThrow(AssertionFailedError::class, 'Concerns/DumpsState.php: dump()');
+
+    DebugLeftovers::assert($fixture('non-class'), [
+        'Fixture\Debug\NonClass\Concerns\DumpsState',
+        'Fixture\Debug\NonClass\Support\Inspector',
+    ]);
+
+    DebugLeftovers::assert($fixture('non-class'), ['Fixture\Debug\NonClass']);
+});

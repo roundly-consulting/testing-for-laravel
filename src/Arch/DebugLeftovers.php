@@ -233,8 +233,8 @@ final class DebugLeftovers
     }
 
     /**
-     * The fully-qualified name of the first class declared in the file, or null when it
-     * declares none.
+     * The fully-qualified name of the first class-like declared in the file — a class, trait,
+     * enum or interface, each of which an exemption may name — or null when it declares none.
      *
      * @param  list<array{0: int|null, 1: string}>  $tokens
      */
@@ -255,7 +255,7 @@ final class DebugLeftovers
         }
 
         for ($i = 0; $i < $count; $i++) {
-            if ($tokens[$i][0] !== T_CLASS) {
+            if (! in_array($tokens[$i][0], [T_CLASS, T_TRAIT, T_ENUM, T_INTERFACE], true)) {
                 continue;
             }
 
