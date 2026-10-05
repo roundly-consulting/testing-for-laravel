@@ -370,7 +370,7 @@ final class ArchPresets
 
     /**
      * Every morph column in `$migrationsDir` goes through the toolkit's `morphKey()` seam —
-     * no raw `$table->morphs()` / `nullableMorphs()` / `uuid`|`ulid` variant, which hardcode
+     * no raw `$table->morphs()` / `nullableMorphs()` / `numeric`|`uuid`|`ulid` variant, which hardcode
      * the id key type and break uuid/ulid hosts on a strict engine (SQLite type affinity hides
      * it). Scanned from source tokens, so a docblock or string literal mentioning `morphs(` is
      * not a false red, and `morphKey` itself never trips it. See {@see MorphSeam}.

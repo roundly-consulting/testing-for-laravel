@@ -62,10 +62,11 @@ use SplFileInfo;
 final class MorphSeam
 {
     /**
-     * Every raw Blueprint morph helper the `morphKey` seam replaces. All six hardcode an id
-     * key type at schema-build time — `morphs`/`nullableMorphs` to `bigint`, and the
+     * Every raw Blueprint morph helper the `morphKey` seam replaces. All eight hardcode an id
+     * key type at schema-build time — `morphs`/`nullableMorphs` (which delegate to the
+     * `numeric` pair) and `numericMorphs`/`nullableNumericMorphs` to `bigint`, and the
      * `uuid`/`ulid` variants to their namesake — which is the decision the seam exists to move
-     * into config. Any of them in a migration bypasses the seam, so all six are banned, not
+     * into config. Any of them in a migration bypasses the seam, so all eight are banned, not
      * just the `bigint` pair. Public so a consumer can reuse the exact list.
      *
      * @var list<string>
@@ -73,6 +74,8 @@ final class MorphSeam
     public const array RAW_MORPHS = [
         'morphs',
         'nullableMorphs',
+        'numericMorphs',
+        'nullableNumericMorphs',
         'uuidMorphs',
         'nullableUuidMorphs',
         'ulidMorphs',

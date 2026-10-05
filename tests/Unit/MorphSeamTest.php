@@ -87,3 +87,17 @@ it('reds on a missing directory', function (): void {
     expect(fn () => MorphSeam::assert('/nope/not/here'))
         ->toThrow(AssertionFailedError::class, 'Migrations directory does not exist');
 });
+
+it('flags numericMorphs and nullableNumericMorphs', function () use ($fixture): void {
+    try {
+        MorphSeam::assert($fixture('numeric'));
+    } catch (AssertionFailedError $failure) {
+        expect($failure->getMessage())
+            ->toContain('create_reactions_table.php: numericMorphs()')
+            ->toContain('create_reactions_table.php: nullableNumericMorphs()');
+
+        return;
+    }
+
+    $this->fail('A raw numericMorphs() passed the morph seam.');
+});
