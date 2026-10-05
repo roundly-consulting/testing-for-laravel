@@ -22,3 +22,17 @@ it('fails loudly through the static negative-control escape hatch on sqlite', fu
         'sqlite_real',
     ))->toThrow(AssertionFailedError::class);
 });
+
+it('applies a named-class migration and loads it twice', function (): void {
+    // The Migrator resolves a named class from the file name; a second load in the same
+    // process must reuse that class rather than require the file again (a fatal redeclare).
+    expect(fixturePath('named-class'))->toApplyOnConnection('sqlite_real', migrations: 1)
+        ->and(fixturePath('named-class'))->toApplyOnConnection('sqlite_real', migrations: 1);
+});
+
+it('fails a named class that is not a Migration, by name, on every load', function (): void {
+    foreach ([1, 2] as $load) {
+        expect(fn (): mixed => expect(fixturePath('loader/named-class-not-migration'))->toApplyOnConnection('sqlite_real'))
+            ->toThrow(AssertionFailedError::class, 'declares `CreateNotAMigrationTable`, which is not a Migration');
+    }
+});
