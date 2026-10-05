@@ -5,10 +5,14 @@ declare(strict_types=1);
 namespace RoundlyConsulting\Testing\Arch;
 
 use FilesystemIterator;
+use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Query\Builder as QueryBuilder;
 use PHPUnit\Framework\Assert;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
+use ReflectionClass;
+use ReflectionMethod;
 use SplFileInfo;
 
 /**
@@ -23,6 +27,15 @@ use SplFileInfo;
  *      the packaged class, and authorization for a host's own subclass reads empty. The
  *      correct seam resolves the configured class-string first (`self::class()::query()`)
  *      and is therefore never flagged.
+ *
+ *      `query()` is one spelling of many. Model's `__callStatic` forwards **any** method it
+ *      does not declare to a fresh query on the named class, so `static::where()`,
+ *      `self::create()` and `static::firstOrCreate()` are the same bypass — as are Model's own
+ *      query entry points (`all()`, `with()`, `on()`, `destroy()`, …). Those are flagged too;
+ *      a static call to Model's *own* statics (`static::creating()`, `addGlobalScope()`, the
+ *      shape of every `booted()` hook) or to the class's own helper is not forwarded and is
+ *      not. And `new self` always builds the packaged class — even in an instance method,
+ *      where `$this` is the host's subclass — so it is flagged in any context.
  *
  *      This check is gated on the class actually extending {@see Model}, and that gate is
  *      load-bearing rather than decorative. `self::query()` is only a seam bypass if
@@ -93,6 +106,17 @@ final class ModelSeam
     private const MODEL_KEY = '/^[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+$/';
 
     /**
+     * Model's own static entry points that build a query on the named class — declared on
+     * Model, so not forwarded, but the same bypass as `query()`. Lowercased.
+     *
+     * @var list<string>
+     */
+    private const array QUERY_ENTRY_POINTS = ['query', 'all', 'with', 'on', 'onwriteconnection', 'destroy'];
+
+    /** @var list<string>|null lowercased public methods of the Eloquent and query builders */
+    private static ?array $builderMethods = null;
+
+    /**
      * @param  list<string>  $modelKeys  the swap keys to police; declared beats inferred
      */
     public static function assert(string $srcDir, string $seamDir = 'Support', array $modelKeys = []): void
@@ -115,7 +139,7 @@ final class ModelSeam
         $declaredSeen = [];
 
         foreach ($tokenized as $file => $tokens) {
-            if (self::isModel($tokens, $parents) && self::usesLateStaticResolution($tokens)) {
+            if (self::isModel($tokens, $parents) && self::usesLateStaticResolution($tokens, self::declaredClass($tokens))) {
                 $lateBinding[] = self::relative($srcDir, $file);
             }
 
@@ -146,8 +170,9 @@ final class ModelSeam
         Assert::assertSame(
             [],
             $lateBinding,
-            'These files resolve a model through late static binding (static::query() / self::query() / '
-            .'new static) instead of the configured seam, so a host subclass swap is ignored: '
+            'These files resolve a model through late static binding (static::/self:: query calls such as '
+            .'query(), where() or create() in a static context, new static, new self) instead of the configured '
+            .'seam, so a host subclass swap is ignored: '
             .implode(', ', $lateBinding).'. Resolve the configured class-string first.',
         );
 
@@ -422,15 +447,25 @@ final class ModelSeam
      *
      * @param  list<array{0: int|null, 1: string}>  $tokens
      */
-    private static function usesLateStaticResolution(array $tokens): bool
+    private static function usesLateStaticResolution(array $tokens, ?string $class): bool
     {
         $count = count($tokens);
         $context = new LateBindingContext;
+        $declared = self::declaredMethods($tokens);
 
         for ($i = 0; $i < $count; $i++) {
             [$id, $text] = $tokens[$i];
 
             $context->observe($tokens, $i);
+
+            // `new self` names the packaged class in any context — no `$this` rescues it.
+            if ($id === T_NEW) {
+                $next = $tokens[$i + 1] ?? null;
+
+                if ($next !== null && $next[0] === T_STRING && strtolower($next[1]) === 'self') {
+                    return true;
+                }
+            }
 
             if (! $context->inStaticContext()) {
                 continue;
@@ -445,24 +480,95 @@ final class ModelSeam
                 }
             }
 
-            // `static::query(` or `self::query(`
+            // `static::query(`, `self::where(`, `static::firstOrCreate(` …
             if ($text === '::') {
                 $prev = $tokens[$i - 1] ?? null;
                 $method = $tokens[$i + 1] ?? null;
                 $paren = $tokens[$i + 2] ?? null;
 
                 $onStaticOrSelf = $prev !== null
-                    && ($prev[0] === T_STATIC || ($prev[0] === T_STRING && $prev[1] === 'self'));
+                    && ($prev[0] === T_STATIC || ($prev[0] === T_STRING && strtolower($prev[1]) === 'self'));
 
                 if ($onStaticOrSelf
-                    && $method !== null && $method[0] === T_STRING && $method[1] === 'query'
-                    && $paren !== null && $paren[1] === '(') {
+                    && $method !== null && $method[0] === T_STRING
+                    && $paren !== null && $paren[1] === '('
+                    && self::buildsQuery($method[1], $class, $declared)) {
                     return true;
                 }
             }
         }
 
         return false;
+    }
+
+    /**
+     * Whether `static::$method(` in a model's static context builds a query on the named
+     * class: one of Model's query entry points, or a builder method Model's `__callStatic`
+     * forwards to a fresh query — i.e. one neither the class nor Model declares.
+     *
+     * @param  list<string>  $declared  the file's own method names, lowercased
+     */
+    private static function buildsQuery(string $method, ?string $class, array $declared): bool
+    {
+        $method = strtolower($method);
+
+        if (in_array($method, self::QUERY_ENTRY_POINTS, true)) {
+            return true;
+        }
+
+        if (in_array($method, $declared, true) || method_exists(Model::class, $method)) {
+            return false;
+        }
+
+        // A loadable class answers for its traits and intermediate bases too.
+        if ($class !== null && class_exists($class) && method_exists($class, $method)) {
+            return false;
+        }
+
+        return in_array($method, self::builderMethods(), true);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function builderMethods(): array
+    {
+        if (self::$builderMethods === null) {
+            $methods = [];
+
+            foreach ([EloquentBuilder::class, QueryBuilder::class] as $builder) {
+                foreach ((new ReflectionClass($builder))->getMethods(ReflectionMethod::IS_PUBLIC) as $method) {
+                    if (! str_starts_with($method->getName(), '__')) {
+                        $methods[] = strtolower($method->getName());
+                    }
+                }
+            }
+
+            self::$builderMethods = array_values(array_unique($methods));
+        }
+
+        return self::$builderMethods;
+    }
+
+    /**
+     * The names of the methods the file declares, lowercased.
+     *
+     * @param  list<array{0: int|null, 1: string}>  $tokens
+     * @return list<string>
+     */
+    private static function declaredMethods(array $tokens): array
+    {
+        $names = [];
+
+        foreach ($tokens as $i => [$id]) {
+            $name = $tokens[$i + 1] ?? null;
+
+            if ($id === T_FUNCTION && $name !== null && $name[0] === T_STRING) {
+                $names[] = strtolower($name[1]);
+            }
+        }
+
+        return $names;
     }
 
     /**

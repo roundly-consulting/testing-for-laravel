@@ -292,3 +292,19 @@ it('still rejects a seam bypass in a class that declares an abstract method', fu
     expect(fn () => ModelSeam::assert($archFixture('seam/abstract-method')))
         ->toThrow(AssertionFailedError::class);
 });
+
+it('flags static::where()/firstOrCreate() in a static model method and new self', function () use ($archFixture): void {
+    // Model::__callStatic forwards any method it does not declare to a fresh query on the class
+    // the caller NAMED — the same late-binding bypass as static::query(), spelled differently.
+    foreach (['static-where', 'static-first-or-create', 'self-create', 'new-self'] as $fixture) {
+        expect(fn () => ModelSeam::assert($archFixture("seam/{$fixture}")))
+            ->toThrow(AssertionFailedError::class, 'Models/Tag.php');
+    }
+});
+
+it('accepts static hook registration and own helpers in booted()', function () use ($archFixture): void {
+    // static::creating(), static::addGlobalScope(), self::saving() are Model's own statics; a
+    // class's own static helper is its own. Nothing is forwarded to a query, so nothing bypasses
+    // the seam — 35 fleet booted() hooks have exactly this shape.
+    ModelSeam::assert($archFixture('seam/booted-hooks'));
+});
