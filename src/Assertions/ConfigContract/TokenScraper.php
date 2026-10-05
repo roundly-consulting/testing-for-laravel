@@ -179,7 +179,9 @@ final class TokenScraper
             $helper = $this->opensConfigHelper($tokens, $i);
 
             if ($helper || $this->opensFacadeRead($tokens, $i, $imports) || $this->opensRepositoryRead($tokens, $i, $repositories, $imports)) {
-                $argument = $this->captureFirstArgument($tokens, $i + 1);
+                // The key by name (`config(key: 'pkg.x')`, in any position) or else the first
+                // argument — never a `key:` label mistaken for part of the key.
+                $argument = $this->callArgument($tokens, $i + 1, 0, 'key') ?? [];
 
                 if ($this->isArrayArgument($argument)) {
                     // `config([...])` SETS keys — a write proves nothing is consumed. The same
@@ -1135,43 +1137,6 @@ final class TokenScraper
         }
 
         return $name;
-    }
-
-    /**
-     * Collect the tokens of the first argument to the call whose `(` is at $openIndex.
-     *
-     * @param  list<array{0: int|null, 1: string}>  $tokens
-     * @return list<array{0: int|null, 1: string}>
-     */
-    private function captureFirstArgument(array $tokens, int $openIndex): array
-    {
-        $argument = [];
-        $depth = 0;
-        $count = count($tokens);
-
-        for ($i = $openIndex; $i < $count; $i++) {
-            $char = $tokens[$i][1];
-
-            if (in_array($char, ['(', '[', '{'], true)) {
-                $depth++;
-
-                if ($depth === 1) {
-                    continue;
-                }
-            } elseif (in_array($char, [')', ']', '}'], true)) {
-                $depth--;
-
-                if ($depth === 0) {
-                    break;
-                }
-            } elseif ($char === ',' && $depth === 1) {
-                break;
-            }
-
-            $argument[] = $tokens[$i];
-        }
-
-        return $argument;
     }
 
     /**

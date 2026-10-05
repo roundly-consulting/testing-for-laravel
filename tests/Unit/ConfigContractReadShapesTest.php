@@ -95,3 +95,11 @@ it('still reports the view-read keys when the views directory is not scanned', f
         ->toContain('REVERSE')
         ->toContain('shop.banner');
 });
+
+// ---------------------------------------------------------------------------
+// The key passed as a named argument.
+// ---------------------------------------------------------------------------
+
+it("counts config(key: 'pkg.x')", function (): void {
+    expect(contractFailure('named-key'))->toBe('');
+});
