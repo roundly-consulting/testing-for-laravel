@@ -308,3 +308,19 @@ it('accepts static hook registration and own helpers in booted()', function () u
     // the seam — 35 fleet booted() hooks have exactly this shape.
     ModelSeam::assert($archFixture('seam/booted-hooks'));
 });
+
+it('allows composer platform packages by default', function () use ($archFixture): void {
+    // Platform packages install no code — composer-runtime-api, composer-plugin-api, lib-*,
+    // php-64bit name the platform, not a vendor — so they are not what the policy guards.
+    // Vendors whose names merely start like one are still caught.
+    try {
+        RuntimeRequires::assert($archFixture('composer/platform.json'));
+    } catch (AssertionFailedError $failure) {
+        expect($failure->getMessage())
+            ->toContain('holds packages outside the runtime dependency policy: library-maker/lib-like-name, php-vendor/not-a-platform-package.');
+
+        return;
+    }
+
+    $this->fail('Third-party vendors passed the runtime dependency policy.');
+});

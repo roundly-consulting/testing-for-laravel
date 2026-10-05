@@ -1,0 +1,14 @@
+{
+    "name": "roundly-consulting/example-for-laravel",
+    "require": {
+        "php": "^8.4",
+        "php-64bit": "^8.4",
+        "ext-openssl": "*",
+        "lib-openssl": ">=3.0",
+        "composer-runtime-api": "^2.2",
+        "composer-plugin-api": "^2.0",
+        "illuminate/support": "^12.0|^13.0",
+        "php-vendor/not-a-platform-package": "^1.0",
+        "library-maker/lib-like-name": "^1.0"
+    }
+}
