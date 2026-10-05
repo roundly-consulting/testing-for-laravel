@@ -107,15 +107,16 @@ final class TokenScraper
     ];
 
     /**
-     * The repository methods that *read* a key by its first argument. `set()` and `push()`
-     * are deliberately absent: writing a key is not evidence anything consumes it, and
-     * counting a write as a read would let a key that is only ever set pass the reverse
-     * check — exactly the dead-key class it exists to catch.
+     * The repository methods that *read* a key by its first argument — `getMany()` reads each
+     * key of the array it is handed. `set()` and `push()` are deliberately absent: writing a
+     * key is not evidence anything consumes it, and counting a write as a read would let a key
+     * that is only ever set pass the reverse check — exactly the dead-key class it exists to
+     * catch.
      *
      * @var list<string>
      */
     private const array READ_METHODS = [
-        'get', 'has', 'string', 'integer', 'boolean', 'float', 'array', 'collection',
+        'get', 'getMany', 'has', 'string', 'integer', 'boolean', 'float', 'array', 'collection',
     ];
 
     /**
@@ -181,7 +182,7 @@ final class TokenScraper
             if ($helper || $this->opensFacadeRead($tokens, $i, $imports) || $this->opensRepositoryRead($tokens, $i, $repositories, $imports)) {
                 // The key by name (`config(key: 'pkg.x')`, in any position) or else the first
                 // argument — never a `key:` label mistaken for part of the key.
-                $argument = $this->callArgument($tokens, $i + 1, 0, 'key') ?? [];
+                $argument = $this->callArgument($tokens, $i + 1, 0, $text === 'getMany' ? 'keys' : 'key') ?? [];
 
                 if ($this->isArrayArgument($argument)) {
                     // `config([...])` SETS keys — a write proves nothing is consumed. The same

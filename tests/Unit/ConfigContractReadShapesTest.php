@@ -103,3 +103,7 @@ it('still reports the view-read keys when the views directory is not scanned', f
 it("counts config(key: 'pkg.x')", function (): void {
     expect(contractFailure('named-key'))->toBe('');
 });
+
+it('counts getMany() keys as reads', function (): void {
+    expect(contractFailure('get-many'))->toBe('');
+});
