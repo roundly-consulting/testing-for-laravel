@@ -16,6 +16,11 @@ use ReflectionClass;
  * six directories looking for `database/migrations`. This resolves identically for a
  * path-symlinked sibling and a VCS install, and makes "name a sibling's migration
  * file" — the mistake that broke five packages — impossible to express.
+ *
+ * The walk **stops at the package root** — the first directory holding a `composer.json`.
+ * Above it is someone else's tree: for a package installed under a host's `vendor/`, the
+ * next `database/migrations` up is the HOST's, and loading (or checking) that set in the
+ * package's name is a silent, vacuous pass.
  */
 final class ProviderMigrationDirectory
 {
@@ -41,6 +46,10 @@ final class ProviderMigrationDirectory
 
             if (is_dir($candidate)) {
                 return $candidate;
+            }
+
+            if (is_file($directory.'/composer.json')) {
+                break;
             }
 
             $parent = dirname($directory);
