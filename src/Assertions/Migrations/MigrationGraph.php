@@ -169,10 +169,19 @@ final class MigrationGraph
 
     private function parse(string $directory): void
     {
-        Assert::assertDirectoryExists($directory, "Migrations directory does not exist: {$directory}");
+        // The same file list the real-engine runner applies, so the two cannot disagree about
+        // what "the set" is.
+        $files = MigrationFiles::sorted($directory);
 
-        $files = glob(rtrim($directory, '/').'/*.php') ?: [];
-        sort($files);
+        // Guard the guard: zero files is an empty parse, and an empty parse satisfies every
+        // check below — `foreignKeys: 0` included. A publish-only stub directory reads the
+        // same way, because `*.php.stub` is not a migration until it is published.
+        Assert::assertNotSame(
+            [],
+            $files,
+            "No migration files (*.php) in {$directory}, so there is no order to pin. A publish-only "
+            .'*.php.stub set is not read: point the assertion at the directory that holds the migrations.',
+        );
 
         $ordinal = 0;
         $parsed = [];
@@ -191,6 +200,13 @@ final class MigrationGraph
 
             $parsed[] = [$file, $source, $blocks];
         }
+
+        Assert::assertGreaterThan(
+            0,
+            $ordinal,
+            "The migrations in {$directory} hold no Schema::create() or Schema::table() block, so there "
+            .'is no order to pin — a pass would be a verdict over an empty parse.',
+        );
 
         foreach ($parsed as [$file, $source, $blocks]) {
             $imports = MigrationSource::imports($source);

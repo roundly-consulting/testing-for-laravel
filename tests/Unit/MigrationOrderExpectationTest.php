@@ -157,3 +157,28 @@ it('mirrors external tables through the static escape hatch', function (): void 
 
     expect(true)->toBeTrue();
 });
+
+// ---------------------------------------------------------------------------
+// An empty parse is never "runnable" — not even with foreignKeys: 0.
+// ---------------------------------------------------------------------------
+
+it('fails on an empty or stub-only directory, even with foreignKeys: 0', function (): void {
+    $empty = sys_get_temp_dir().'/order-pin-empty-'.bin2hex(random_bytes(6));
+    mkdir($empty);
+
+    try {
+        foreach ([null, 0] as $pin) {
+            expect(fn (): mixed => expect($empty)->toHaveRunnableMigrationOrder($pin))
+                ->toThrow(AssertionFailedError::class, 'No migration files')
+                ->and(fn (): mixed => expect(fixturePath('broken/stub-only'))->toHaveRunnableMigrationOrder($pin))
+                ->toThrow(AssertionFailedError::class, '*.php.stub');
+        }
+    } finally {
+        rmdir($empty);
+    }
+});
+
+it('fails a set with no Schema::create()/table() block to order', function (): void {
+    expect(fn (): mixed => expect(fixturePath('broken/no-schema-blocks'))->toHaveRunnableMigrationOrder(foreignKeys: 0))
+        ->toThrow(AssertionFailedError::class, 'no Schema::create() or Schema::table() block');
+});
