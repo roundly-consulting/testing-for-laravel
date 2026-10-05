@@ -6,6 +6,52 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 
 ## Unreleased
 
+### Changed
+
+- `toHaveRunnableMigrationOrder()` now fails when there is nothing to order: an empty
+  directory, a directory of `*.php.stub` files only, or migrations with no
+  `Schema::create()`/`Schema::table()` block — even with `foreignKeys: 0`. Point it at the
+  directory that holds your migrations.
+- The order pin follows each table's life through `up()`: a second `Schema::create()` without a
+  drop in between now fails, and so does a key onto (or an ALTER of) a table already dropped or
+  renamed. `down()` is ignored.
+- `ModelSeam` (`modelsResolveThroughSeam()`) also flags `static::where()`, `self::create()`,
+  `static::firstOrCreate()` and other query calls in a model's static methods, plus `new self`
+  anywhere in a model. Route them through your seam. Static hooks such as `static::creating()`
+  in `booted()` are unaffected.
+- `morphColumnsUseTheSeam()` also bans `numericMorphs()` and `nullableNumericMorphs()`. Use
+  `morphKey()` instead.
+- `noDebuggingLeftovers()` matches debug calls in any letter case (`DD()`, `Var_Dump()`).
+- `toApplyOnConnection()` / `toRejectBrokenOrderOnConnection()` refuse a real-engine connection
+  that is not an isolated probe — Testbench's stock `mariadb`, or the suite's own `testing`
+  connection on a Postgres/MySQL leg. Use the `pgsql` / `mysql` probes; SQLite connections are
+  still accepted.
+- `LockRecordingGrammar` throws on a non-SQLite connection. Gate grammar-based lock tests to
+  SQLite; on Postgres and MySQL the engine takes the real lock.
+- `LockRecordingBuilder` records a lock when its query runs, at the transaction depth it runs
+  at. A locking query that never runs records nothing.
+- On a SQLite leg, `TESTING_DB_*` now describes the Postgres probe only. To reach MySQL, run a
+  MySQL leg (`TESTING_DB_DRIVER=mysql`).
+- `runtimeRequireIsWhitelisted()` allows Composer platform packages (`composer-runtime-api`,
+  `composer-plugin-api`, `lib-*`, `php-64bit`, …) without an `$alsoAllow` entry.
+
+### Fixed
+
+- The order pin reads `Schema::connection(...)->create()`/`table()` blocks and
+  `Schema::rename()` instead of failing them as unparsed or uncreated.
+- Named-class migrations load like the Laravel migrator loads them, and loading one twice no
+  longer crashes the run with a class redeclaration.
+- A provider's migrations directory is looked up no higher than the package root, so a package
+  installed under a host's `vendor/` never resolves to the host's own migrations.
+- Under `pest --parallel` on a real engine, each worker gets its own database and probe
+  namespace, so one worker's teardown no longer drops another worker's tables.
+- A SQLite leg with a Postgres location no longer stalls for minutes probing MySQL at that
+  Postgres port.
+- The config contract counts `config(key: '…')` and other named-key reads, and keys read
+  through `getMany()`.
+- `noDebuggingLeftovers()` exemptions can name traits, enums and interfaces, by name or by
+  namespace.
+
 ## 1.0.0 - 2026-10-03
 
 Initial public release.
