@@ -6,6 +6,8 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 
 ## Unreleased
 
+## 1.0.1 - 2026-10-05
+
 ### Changed
 
 - `toHaveRunnableMigrationOrder()` now fails when there is nothing to order: an empty
@@ -25,7 +27,7 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 - `toApplyOnConnection()` / `toRejectBrokenOrderOnConnection()` refuse a real-engine connection
   that is not an isolated probe — Testbench's stock `mariadb`, or the suite's own `testing`
   connection on a Postgres/MySQL leg. Use the `pgsql` / `mysql` probes; SQLite connections are
-  still accepted.
+  still accepted. `DriverMatrix::isProbe()` tells you whether a connection qualifies.
 - `LockRecordingGrammar` throws on a non-SQLite connection. Gate grammar-based lock tests to
   SQLite; on Postgres and MySQL the engine takes the real lock.
 - `LockRecordingBuilder` records a lock when its query runs, at the transaction depth it runs
@@ -34,6 +36,10 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
   MySQL leg (`TESTING_DB_DRIVER=mysql`).
 - `runtimeRequireIsWhitelisted()` allows Composer platform packages (`composer-runtime-api`,
   `composer-plugin-api`, `lib-*`, `php-64bit`, …) without an `$alsoAllow` entry.
+- Maintenance: `composer.json` `homepage` and `support.docs` point at the documentation site.
+- Documentation: the README installs with `--with-all-dependencies` (so Composer can move a fresh
+  app's `phpunit/phpunit` to a version Pest 4 supports) and loads its hero image from an
+  absolute URL.
 
 ### Fixed
 
@@ -45,6 +51,7 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
   installed under a host's `vendor/` never resolves to the host's own migrations.
 - Under `pest --parallel` on a real engine, each worker gets its own database and probe
   namespace, so one worker's teardown no longer drops another worker's tables.
+  `DriverMatrix::probeNamespace()` returns the current worker's probe namespace.
 - A SQLite leg with a Postgres location no longer stalls for minutes probing MySQL at that
   Postgres port.
 - The config contract counts `config(key: '…')` and other named-key reads, and keys read
