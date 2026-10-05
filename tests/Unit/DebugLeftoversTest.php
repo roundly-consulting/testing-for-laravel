@@ -76,3 +76,23 @@ it('fails when the source directory does not exist', function (): void {
     expect(fn () => DebugLeftovers::assert('/nope/not/here'))
         ->toThrow(AssertionFailedError::class);
 });
+
+it('catches DD()/Var_Dump() regardless of case', function () use ($fixture): void {
+    try {
+        DebugLeftovers::assert($fixture('mixed-case'));
+    } catch (AssertionFailedError $failure) {
+        expect($failure->getMessage())
+            ->toContain('MixedCaseLeftover.php: DD()')
+            ->toContain('MixedCaseLeftover.php: Var_Dump()')
+            ->toContain('MixedCaseLeftover.php: Print_R()')
+            ->toContain('MixedCaseLeftover.php: ->DDRawSql()');
+
+        return;
+    }
+
+    $this->fail('Mixed-case debug calls passed the ban.');
+});
+
+it('does not mistake an instantiated or static class for a debug call', function () use ($fixture): void {
+    DebugLeftovers::assert($fixture('green-case'));
+});

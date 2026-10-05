@@ -138,9 +138,11 @@ final class DebugLeftovers
      * **method** called through `->` / `?->` (reported as `->dd`).
      *
      * A function call is `name(` where `name` is not reached through `->` or `::` (a method
-     * named `dump()` on some object is not this ban's business) and is not the
-     * `function dump()` declaration itself. `\dd(` arrives as one fully-qualified token and
-     * is matched too. A method call is `->name(` for a name in {@see self::METHODS}.
+     * named `dump()` on some object is not this ban's business), is not the
+     * `function dump()` declaration itself and is not a `new Dump(` instantiation. `\dd(`
+     * arrives as one fully-qualified token and is matched too. A method call is `->name(` for
+     * a name in {@see self::METHODS}. Names match case-insensitively, as PHP calls them:
+     * `DD($x)` runs `dd()`.
      *
      * @param  list<array{0: int|null, 1: string}>  $tokens
      * @return list<string>
@@ -158,8 +160,9 @@ final class DebugLeftovers
             }
 
             $name = ltrim($text, '\\');
+            $lower = strtolower($name);
 
-            if (! in_array($name, self::FUNCTIONS, true) && ! in_array($name, self::METHODS, true)) {
+            if (! in_array($lower, self::lowercased(self::FUNCTIONS), true) && ! in_array($lower, self::lowercased(self::METHODS), true)) {
                 continue;
             }
 
@@ -172,15 +175,15 @@ final class DebugLeftovers
             $previous = $tokens[$i - 1] ?? null;
 
             if ($previous !== null && in_array($previous[0], [T_OBJECT_OPERATOR, T_NULLSAFE_OBJECT_OPERATOR], true)) {
-                if ($id === T_STRING && in_array($text, self::METHODS, true)) {
+                if ($id === T_STRING && in_array($lower, self::lowercased(self::METHODS), true)) {
                     $found[] = '->'.$text;
                 }
 
                 continue;
             }
 
-            // `Foo::dump(`, `function dump(` — not a call to the global.
-            if ($previous !== null && in_array($previous[0], [T_DOUBLE_COLON, T_FUNCTION], true)) {
+            // `Foo::dump(`, `function dump(`, `new Dump(` — not a call to the global.
+            if ($previous !== null && in_array($previous[0], [T_DOUBLE_COLON, T_FUNCTION, T_NEW], true)) {
                 continue;
             }
 
@@ -188,6 +191,15 @@ final class DebugLeftovers
         }
 
         return array_values(array_unique($found));
+    }
+
+    /**
+     * @param  list<string>  $names
+     * @return list<string>
+     */
+    private static function lowercased(array $names): array
+    {
+        return array_map(strtolower(...), $names);
     }
 
     /**
