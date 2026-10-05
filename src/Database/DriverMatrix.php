@@ -135,13 +135,11 @@ final class DriverMatrix
      */
     public static function prepareProbe(string $connection): void
     {
-        $settings = app(Repository::class)->get("database.connections.{$connection}");
-
-        if (! is_array($settings) || ! self::isProbe($settings)) {
+        if (! self::isProbe($connection)) {
             return;
         }
 
-        $driver = $settings['driver'] ?? null;
+        $driver = app(Repository::class)->get("database.connections.{$connection}.driver");
 
         if ($driver === 'pgsql') {
             // Postgres accepts a `search_path` naming a schema that does not exist yet, so
@@ -179,15 +177,19 @@ final class DriverMatrix
     }
 
     /**
-     * Whether a connection config is an isolated probe — i.e. confined to
+     * Whether a configured connection is an isolated probe — i.e. confined to
      * {@see self::PROBE_NAMESPACE}. Keyed on the namespace rather than the connection
      * name so a suite that registers the probe under another name still gets the guard,
-     * and so the suite's own connection can never match.
-     *
-     * @param  array<string, mixed>  $settings
+     * and so the suite's own connection can never match. An unconfigured name is no probe.
      */
-    private static function isProbe(array $settings): bool
+    public static function isProbe(string $connection): bool
     {
+        $settings = app(Repository::class)->get("database.connections.{$connection}");
+
+        if (! is_array($settings)) {
+            return false;
+        }
+
         return match ($settings['driver'] ?? null) {
             'pgsql' => ($settings['search_path'] ?? null) === self::PROBE_NAMESPACE,
             'mysql', 'mariadb' => ($settings['database'] ?? null) === self::PROBE_NAMESPACE,

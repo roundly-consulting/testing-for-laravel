@@ -32,6 +32,13 @@ use Throwable;
  * clean before and after every run and the previous default is always restored — even
  * when the run cannot start.
  *
+ * Both entry points refuse a target that could hold data they have no right to drop: a
+ * real-engine connection must be an isolated probe ({@see DriverMatrix::PROBE_NAMESPACE});
+ * only sqlite is exempt, because an in-memory or scratch-file database is already its own.
+ * Without that, `toApplyOnConnection('mariadb')` ran on Testbench's stock connection — database
+ * `laravel` as passwordless root — and wiped it, and `'testing'` on a real-engine leg wiped the
+ * suite's own schema.
+ *
  * Both entry points refuse an engine they cannot reach. An unreachable engine "rejects"
  * everything, so without that guard the negative control passed on a Postgres that was
  * down, over an order nobody had broken. For the same reason a rejection only counts when
@@ -67,6 +74,7 @@ final class MigrationRunner
             );
         }
 
+        self::assertDisposable($connection);
         self::assertReachable($connection);
 
         try {
@@ -118,6 +126,7 @@ final class MigrationRunner
             'The $reorder closure must return a permutation of the migration files (the same files, reordered).',
         );
 
+        self::assertDisposable($connection);
         self::assertReachable($connection);
 
         $rejection = null;
@@ -165,6 +174,26 @@ final class MigrationRunner
         } catch (Throwable) {
             return false;
         }
+    }
+
+    /**
+     * Refuse a target whose tables this runner has no right to drop: a configured real-engine
+     * connection that is not an isolated probe. An unconfigured name falls through to
+     * {@see self::assertReachable()}, which fails it as unreachable.
+     */
+    private static function assertDisposable(string $connection): void
+    {
+        $settings = app(Repository::class)->get("database.connections.{$connection}");
+
+        if (! is_array($settings) || ($settings['driver'] ?? null) === 'sqlite' || DriverMatrix::isProbe($connection)) {
+            return;
+        }
+
+        Assert::fail(
+            "MigrationRunner drops every table on its target before and after the run, and [{$connection}] is "
+            .'neither sqlite nor an isolated probe, so it may hold real data or the suite\'s own schema. Use the '
+            .'`pgsql` / `mysql` probe connections DriverMatrix::configure() registers (PackageTestCase does this).',
+        );
     }
 
     /**
