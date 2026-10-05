@@ -58,3 +58,33 @@ it('distinguishes a locked read from an unlocked one', function (): void {
 
     expect(LockRecorder::recorded())->toHaveCount(1);
 });
+
+it('records the depth a lock ran at; records nothing for an unexecuted builder', function (): void {
+    // Built outside the transaction, run inside it: the lock is taken at depth 1.
+    $query = RecordingWidget::query()->lockForUpdate();
+    DB::transaction(fn () => $query->get());
+
+    expect(LockRecorder::recorded())->toHaveCount(1)
+        ->and(LockRecorder::recorded()[0]['transactionDepth'])->toBe(1);
+
+    // Built inside the transaction, run after it committed: no transaction held the lock.
+    LockRecorder::flush();
+    $query = DB::transaction(fn () => RecordingWidget::query()->lockForUpdate());
+    $query->get();
+
+    expect(LockRecorder::recorded())->toHaveCount(1)
+        ->and(LockRecorder::recorded()[0]['transactionDepth'])->toBe(0);
+
+    // A locking builder that never runs took no lock.
+    LockRecorder::flush();
+    RecordingWidget::query()->lockForUpdate();
+
+    expect(LockRecorder::recorded())->toBeEmpty();
+});
+
+it('records the lock a query ran with, once, however many lock calls built it', function (): void {
+    RecordingWidget::query()->lockForUpdate()->sharedLock()->get();
+
+    expect(LockRecorder::recorded())->toHaveCount(1)
+        ->and(LockRecorder::recorded()[0]['marker'])->toBe('lock-shared');
+});

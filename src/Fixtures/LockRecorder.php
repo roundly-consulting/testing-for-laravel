@@ -19,7 +19,7 @@ use RoundlyConsulting\Testing\Fixtures\Concerns\RecordsLocks;
  *
  *  - **Variant A** ({@see LockRecordingBuilder} via
  *    the {@see RecordsLocks} model trait)
- *    records the lock at the moment the builder method is called.
+ *    records the lock when its query runs, at the depth it runs at.
  *  - **Variant B** ({@see LockRecordingGrammar}) compiles the lock to a trailing
  *    `/* lock-for-update *\/` SQL comment; {@see self::listenForMarkers()} wires a
  *    `DB::listen()` that records every marked query and the depth it ran at.
