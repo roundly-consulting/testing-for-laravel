@@ -29,10 +29,14 @@ use PHPUnit\Framework\Assert;
  * ## A table's life, read from `up()` only
  *
  * A table is not created once and for all: a forward-only migration may `Schema::drop()` /
- * `Schema::dropIfExists()` it and create it again. Each table therefore carries its
- * *lifetimes* — create ordinal to drop ordinal — and every ALTER and key is checked against
+ * `Schema::dropIfExists()` it and create it again, or `Schema::rename()` it — which ends the
+ * old name's life and begins the new one's. Each table therefore carries its *lifetimes* —
+ * create ordinal to drop ordinal — and every ALTER and key is checked against
  * the lifetime live **at its own ordinal**, not against whichever CREATE came last. A second
  * CREATE while the first is still live fails: every engine refuses it.
+ *
+ * Blocks scoped to a connection (`Schema::connection('x')->create(...)`) are read like any
+ * other: the set is one run, whichever connection a block names.
  *
  * Only the forward run counts. `down()` is removed before parsing, so a rollback that
  * re-creates a table the same migration's `up()` dropped is not mistaken for a CREATE.
@@ -51,13 +55,13 @@ use PHPUnit\Framework\Assert;
  */
 final class MigrationGraph
 {
-    /** @var array<string, list<array{from: int, to: int|null}>> table name => its lifetimes, in run order */
+    /** @var array<string, list<array{from: int, to: int|null, by: string|null}>> table name => its lifetimes, in run order */
     private array $lifetimes = [];
 
     /** @var list<ForeignKeyEdge> */
     private array $edges = [];
 
-    /** @var list<array{table: string, at: int}> */
+    /** @var list<array{table: string, at: int, action: string}> */
     private array $alters = [];
 
     /**
@@ -99,15 +103,17 @@ final class MigrationGraph
             Assert::assertArrayHasKey(
                 $alter['table'],
                 $this->lifetimes,
-                "`{$alter['table']}` is altered by a migration with no matching Schema::create(). If the table "
+                "`{$alter['table']}` is {$alter['action']} by a migration with no matching Schema::create(). If the table "
                 .'belongs to the host app or another package, declare it: externalTables: [\''.$alter['table'].'\'].',
             );
 
-            // A Schema::table() ALTER must run while its table exists: after a CREATE, before a drop.
+            // An ALTER (or a rename) must run while its table exists: after a CREATE, before a drop.
             if (! $this->liveAt($alter['table'], $alter['at'])) {
-                Assert::fail($this->createdBefore($alter['table'], $alter['at'])
-                    ? "`{$alter['table']}` is altered after it is dropped."
-                    : "`{$alter['table']}` is altered before it is created.");
+                $ended = $this->endedBefore($alter['table'], $alter['at']);
+
+                Assert::fail($ended !== null
+                    ? "`{$alter['table']}` is {$alter['action']} after it is {$ended}."
+                    : "`{$alter['table']}` is {$alter['action']} before it is created.");
             }
         }
 
@@ -143,8 +149,10 @@ final class MigrationGraph
             }
 
             if (! $this->liveAt($edge->parent, $edge->at)) {
-                Assert::fail($this->createdBefore($edge->parent, $edge->at)
-                    ? "`{$edge->child}` references `{$edge->parent}`, which is dropped before it."
+                $ended = $this->endedBefore($edge->parent, $edge->at);
+
+                Assert::fail($ended !== null
+                    ? "`{$edge->child}` references `{$edge->parent}`, which is {$ended} before it."
                     : "`{$edge->child}` references `{$edge->parent}`, which must be created first.");
             }
         }
@@ -174,44 +182,53 @@ final class MigrationGraph
         return false;
     }
 
-    private function createdBefore(string $table, int $at): bool
+    /**
+     * How the last lifetime of $table begun before $at ended — `dropped` / `renamed` — or null
+     * when none had begun (the table is created later, if at all).
+     */
+    private function endedBefore(string $table, int $at): ?string
     {
+        $ended = null;
+
         foreach ($this->lifetimes[$table] ?? [] as $life) {
             if ($life['from'] < $at) {
-                return true;
+                $ended = $life['by'] ?? 'dropped';
             }
         }
 
-        return false;
+        return $ended;
     }
 
     /**
-     * Begin a lifetime of $table at $at. A CREATE while the table is still live is refused by
-     * every engine, so the set is not runnable.
+     * Begin a lifetime of $table at $at. A CREATE (or a rename onto the name) while the table
+     * is still live is refused by every engine, so the set is not runnable.
      */
-    private function begin(string $table, int $at): void
+    private function begin(string $table, int $at, bool $renamedOnto = false): void
     {
         $lives = $this->lifetimes[$table] ?? [];
         $last = $lives === [] ? null : $lives[array_key_last($lives)];
 
         Assert::assertFalse(
             $last !== null && $last['to'] === null,
-            "`{$table}` is created twice with no drop in between — the second Schema::create() fails on every engine.",
+            $renamedOnto
+                ? "A table is renamed to `{$table}` while `{$table}` still exists — every engine refuses the rename."
+                : "`{$table}` is created twice with no drop in between — the second Schema::create() fails on every engine.",
         );
 
-        $this->lifetimes[$table][] = ['from' => $at, 'to' => null];
+        $this->lifetimes[$table][] = ['from' => $at, 'to' => null, 'by' => null];
     }
 
     /**
      * End the live lifetime of $table at $at. Dropping a table the set never created (a
      * `dropIfExists()` of a host table, or of nothing) ends nothing.
      */
-    private function end(string $table, int $at): void
+    private function end(string $table, int $at, string $by = 'dropped'): void
     {
         $last = array_key_last($this->lifetimes[$table] ?? []);
 
         if ($last !== null && $this->lifetimes[$table][$last]['to'] === null) {
             $this->lifetimes[$table][$last]['to'] = $at;
+            $this->lifetimes[$table][$last]['by'] = $by;
         }
     }
 
@@ -270,6 +287,7 @@ final class MigrationGraph
                 match ($block['kind']) {
                     'create' => $this->begin($block['table'], $block['at']),
                     'drop' => $this->end($block['table'], $block['at']),
+                    'rename' => $this->rename($block['table'], (string) $block['to'], $block['at']),
                     default => null,
                 };
 
@@ -292,13 +310,17 @@ final class MigrationGraph
             $references = 0;
 
             foreach ($blocks as $block) {
-                if ($block['kind'] === 'table') {
-                    $this->alters[] = ['table' => $block['table'], 'at' => $block['at']];
+                if (in_array($block['kind'], ['table', 'rename'], true)) {
+                    $this->alters[] = [
+                        'table' => $block['table'],
+                        'at' => $block['at'],
+                        'action' => $block['kind'] === 'rename' ? 'renamed' : 'altered',
+                    ];
                 }
 
-                // A drop declares no column. A key after it in the same span has no block to
-                // belong to, so it stays unparsed and the guard below names it.
-                if ($block['kind'] === 'drop') {
+                // A drop or a rename declares no column. A key after one in the same span has no
+                // block to belong to, so it stays unparsed and the guard below names it.
+                if (in_array($block['kind'], ['drop', 'rename'], true)) {
                     continue;
                 }
 
@@ -324,36 +346,58 @@ final class MigrationGraph
     }
 
     /**
-     * Split a migration file into its Schema::create()/table()/drop()/dropIfExists() blocks,
-     * each carrying the table it operates on, its ordinal in run order and the source span up
-     * to the next block. Both drops normalise to the kind `drop`.
+     * The rename of $from to $to at $at: the old name's life ends, the new name's begins.
+     */
+    private function rename(string $from, string $to, int $at): void
+    {
+        $this->end($from, $at, 'renamed');
+        $this->begin($to, $at, renamedOnto: true);
+    }
+
+    /**
+     * Split a migration file into its Schema::create()/table()/drop()/dropIfExists()/rename()
+     * blocks — on the facade or on `Schema::connection(...)` — each carrying the table it
+     * operates on (a rename: the old name, plus `to`), its ordinal in run order and the source
+     * span up to the next block. Both drops normalise to the kind `drop`.
      *
-     * @return list<array{kind: string, table: string, body: string, at: int}>
+     * @return list<array{kind: string, table: string, to: string|null, body: string, at: int}>
      */
     private function blocks(string $body, string $file, int &$ordinal): array
     {
         // A table argument holds no top-level comma; one level of nested parens is
         // allowed so `Schema::create(SomeClass::table(), ...)` still matches.
         $argument = '((?:[^(),]|\([^()]*\))*?)';
+        $schema = 'Schema::(?:connection\(\s*(?:[^(),]|\([^()]*\))*?\s*\)\s*->\s*)?';
 
-        preg_match_all(
-            '/Schema::(create|table|dropIfExists|drop)\(\s*'.$argument.'\s*[,)]/',
-            $body,
-            $matches,
-            PREG_OFFSET_CAPTURE | PREG_SET_ORDER,
-        );
+        // Two passes, merged by offset: a rename takes two arguments, and an optional second
+        // argument on the others would run on into a closure and past the next block.
+        preg_match_all('/'.$schema.'(create|table|dropIfExists|drop)\(\s*'.$argument.'\s*[,)]/', $body, $single, PREG_OFFSET_CAPTURE | PREG_SET_ORDER);
+        preg_match_all('/'.$schema.'(rename)\(\s*'.$argument.'\s*,\s*'.$argument.'\s*\)/', $body, $renames, PREG_OFFSET_CAPTURE | PREG_SET_ORDER);
+
+        $found = [];
+
+        foreach ($single as $match) {
+            $found[] = ['offset' => $match[0][1], 'kind' => $match[1][0], 'table' => $match[2][0], 'to' => null];
+        }
+
+        foreach ($renames as $match) {
+            $found[] = ['offset' => $match[0][1], 'kind' => 'rename', 'table' => $match[2][0], 'to' => $match[3][0]];
+        }
+
+        usort($found, static fn (array $a, array $b): int => $a['offset'] <=> $b['offset']);
 
         $blocks = [];
-        $total = count($matches);
+        $total = count($found);
+        $context = basename($file);
 
-        foreach ($matches as $position => $match) {
-            $start = (int) $match[0][1];
-            $end = $position + 1 < $total ? (int) $matches[$position + 1][0][1] : strlen($body);
+        foreach ($found as $position => $match) {
+            $end = $position + 1 < $total ? $found[$position + 1]['offset'] : strlen($body);
 
             $blocks[] = [
-                'kind' => str_starts_with((string) $match[1][0], 'drop') ? 'drop' : (string) $match[1][0],
-                'table' => $this->resolver->resolveSchemaTable((string) $match[2][0], basename($file)),
-                'body' => substr($body, $start, $end - $start),
+                'kind' => str_starts_with($match['kind'], 'drop') ? 'drop' : $match['kind'],
+                'table' => $this->resolver->resolveSchemaTable($match['table'], $context),
+                'to' => $match['to'] === null ? null : $this->resolver->resolveSchemaTable($match['to'], $context),
+                'body' => substr($body, $match['offset'], $end - $match['offset']),
                 'at' => $ordinal++,
             ];
         }
@@ -367,7 +411,7 @@ final class MigrationGraph
      * bare `->constrained()` next to the `foreignId()` / `foreignIdFor()` column it derives
      * its parent from.
      *
-     * @param  array{kind: string, table: string, body: string, at: int}  $block
+     * @param  array{kind: string, table: string, to: string|null, body: string, at: int}  $block
      * @param  array<string, string>  $imports
      * @return array{0: int, 1: int} [constrained count, references count]
      */

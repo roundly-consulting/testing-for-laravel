@@ -207,3 +207,22 @@ it('fails a key onto, or an ALTER of, a table that has been dropped', function (
         ->and(fn (): mixed => expect(fixturePath('broken/alter-after-drop'))->toHaveRunnableMigrationOrder(foreignKeys: 0))
         ->toThrow(AssertionFailedError::class, '`tags` is altered after it is dropped');
 });
+
+// ---------------------------------------------------------------------------
+// Schema::connection(...)->create()/table() and Schema::rename().
+// ---------------------------------------------------------------------------
+
+it('recognises Schema::connection()->create() and Schema::rename()', function (): void {
+    expect(fixturePath('green/connection-blocks'))->toHaveRunnableMigrationOrder(foreignKeys: 1)
+        ->and(fixturePath('green/rename'))->toHaveRunnableMigrationOrder(foreignKeys: 1);
+
+    // The old name is gone after the rename; the source of a rename must exist.
+    expect(fn (): mixed => expect(fixturePath('green/rename'))->toHaveRunnableMigrationOrder(
+        foreignKeys: 1,
+        externalTables: ['users'],
+    ))->toThrow(AssertionFailedError::class, 'users')
+        ->and(fn (): mixed => expect(fixturePath('broken/rename-unknown'))->toHaveRunnableMigrationOrder(foreignKeys: 1))
+        ->toThrow(AssertionFailedError::class, '`members` is renamed by a migration with no matching Schema::create()');
+
+    expect(fixturePath('broken/rename-unknown'))->toHaveRunnableMigrationOrder(foreignKeys: 1, externalTables: ['members']);
+});

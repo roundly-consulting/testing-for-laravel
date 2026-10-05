@@ -192,3 +192,8 @@ it('applies the drop-and-recreate sets the order pin accepts', function (): void
     expect(fixturePath('green/drop-in-up'))->toApplyOnConnection('sqlite_real', migrations: 3)
         ->and(fixturePath('green/rebuild'))->toApplyOnConnection('sqlite_real', migrations: 3);
 });
+
+it('applies the connection-scoped and renaming sets the order pin accepts', function (): void {
+    expect(fixturePath('green/connection-blocks'))->toApplyOnConnection('sqlite_real', migrations: 2)
+        ->and(fixturePath('green/rename'))->toApplyOnConnection('sqlite_real', migrations: 3);
+});
