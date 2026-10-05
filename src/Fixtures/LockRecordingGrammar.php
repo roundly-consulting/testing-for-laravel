@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace RoundlyConsulting\Testing\Fixtures;
 
+use Illuminate\Database\Connection;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Database\Query\Grammars\SQLiteGrammar;
+use InvalidArgumentException;
 
 /**
  * Variant B of the lock recorder: a SQLite query grammar that compiles a pessimistic
@@ -28,9 +30,27 @@ use Illuminate\Database\Query\Grammars\SQLiteGrammar;
  * // … drive the flow that locks …
  * expect(LockRecorder::recorded())->toHaveCount(1);
  * ```
+ *
+ * **SQLite only.** It *is* SQLite's grammar: installed on a Postgres or MySQL connection it
+ * would replace that engine's grammar, compile `lockForUpdate()` to a comment — silently
+ * dropping the real row lock — and quote identifiers SQLite's way. It refuses any other
+ * connection; on a real-engine leg, gate the recording test to sqlite and let the engine lock.
  */
 class LockRecordingGrammar extends SQLiteGrammar
 {
+    public function __construct(Connection $connection)
+    {
+        if ($connection->getDriverName() !== 'sqlite') {
+            throw new InvalidArgumentException(
+                "LockRecordingGrammar is SQLite's grammar and cannot be installed on a [{$connection->getDriverName()}] "
+                ."connection [{$connection->getName()}]: it would compile lockForUpdate() to a comment and drop the "
+                .'real row lock. Gate the recording test to sqlite.',
+            );
+        }
+
+        parent::__construct($connection);
+    }
+
     /**
      * @param  bool|string  $value
      */
