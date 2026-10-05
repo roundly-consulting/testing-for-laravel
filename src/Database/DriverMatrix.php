@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace RoundlyConsulting\Testing\Database;
 
+use Illuminate\Container\Container;
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Testing\ParallelTesting;
 use InvalidArgumentException;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationRunner;
 
@@ -34,6 +36,14 @@ use RoundlyConsulting\Testing\Assertions\Migrations\MigrationRunner;
  * // Skip a driver-specific case visibly on the wrong leg:
  * it('uses a jsonb column')->skip(fn () => DriverMatrix::driver() !== 'pgsql');
  * ```
+ *
+ * ## Parallel workers
+ *
+ * Under `pest --parallel` each worker carries a token (Laravel's `ParallelTesting::token()`),
+ * and every worker would otherwise share one database and one probe namespace — so one
+ * worker's teardown (drop every table) and probe drops pulled tables out from under another.
+ * With a token the suite's real-engine database becomes `<database>_<token>` (created on
+ * first use) and the probe namespace `testing_probe_<token>`. Without one nothing changes.
  */
 final class DriverMatrix
 {
@@ -75,6 +85,9 @@ final class DriverMatrix
      */
     public const string PROBE_NAMESPACE = 'testing_probe';
 
+    /** @var array<string, true> worker databases this process has already ensured */
+    private static array $workerDatabases = [];
+
     /**
      * Point the app's default `testing` connection at the matrix driver, and register the
      * real-engine connections (`pgsql`, `mysql`) as **isolated probes** against the same
@@ -100,6 +113,81 @@ final class DriverMatrix
         foreach (self::REAL_ENGINE_DRIVERS as $driver) {
             $config->set("database.connections.{$driver}", self::probeConnectionConfig($driver));
         }
+
+        self::ensureWorkerDatabase($app);
+    }
+
+    /**
+     * The probe namespace for this process: {@see self::PROBE_NAMESPACE}, suffixed with the
+     * parallel worker's token when there is one.
+     */
+    public static function probeNamespace(): string
+    {
+        $token = self::parallelToken();
+
+        return $token === null ? self::PROBE_NAMESPACE : self::PROBE_NAMESPACE.'_'.$token;
+    }
+
+    /**
+     * The parallel worker's token, or null outside `--parallel`. Read through Laravel's own
+     * {@see ParallelTesting} — the app's instance when there is one, so a custom token
+     * resolver is honoured — which falls back to paratest's `TEST_TOKEN`.
+     */
+    private static function parallelToken(): ?string
+    {
+        $container = Container::getInstance();
+        $parallel = $container->bound(ParallelTesting::class)
+            ? $container->make(ParallelTesting::class)
+            : new ParallelTesting($container);
+
+        $token = $parallel->token();
+
+        return is_string($token) && $token !== '' ? $token : null;
+    }
+
+    /**
+     * Create this worker's database on the leg's engine the first time a process needs it:
+     * Postgres and MySQL refuse to connect to a database that does not exist. Created over the
+     * shared database the location names, which is never touched otherwise.
+     */
+    private static function ensureWorkerDatabase(Application $app): void
+    {
+        $driver = self::driver();
+
+        if ($driver === 'sqlite' || self::parallelToken() === null) {
+            return;
+        }
+
+        $worker = self::connectionConfig($driver);
+        $name = (string) $worker['database'];
+        $key = implode('|', [$driver, $worker['host'], $worker['port'], $name]);
+
+        if (isset(self::$workerDatabases[$key])) {
+            return;
+        }
+
+        $config = $app->make('config');
+        $db = $app->make('db');
+        $bootstrap = 'testing__worker_bootstrap';
+
+        $config->set("database.connections.{$bootstrap}", [...$worker, 'database' => self::location($driver, 'DATABASE', 'testing')]);
+
+        try {
+            $connection = $db->connection($bootstrap);
+
+            if ($driver === 'pgsql') {
+                if ($connection->selectOne('select 1 from pg_database where datname = ?', [$name]) === null) {
+                    $connection->statement('create database "'.str_replace('"', '""', $name).'"');
+                }
+            } else {
+                $connection->statement('create database if not exists `'.str_replace('`', '``', $name).'`');
+            }
+        } finally {
+            $db->purge($bootstrap);
+            $config->set("database.connections.{$bootstrap}", null);
+        }
+
+        self::$workerDatabases[$key] = true;
     }
 
     /**
@@ -119,8 +207,8 @@ final class DriverMatrix
         $config = self::connectionConfig($driver);
 
         return match ($driver) {
-            'pgsql' => [...$config, 'search_path' => self::PROBE_NAMESPACE],
-            'mysql', 'mariadb' => [...$config, 'database' => self::PROBE_NAMESPACE],
+            'pgsql' => [...$config, 'search_path' => self::probeNamespace()],
+            'mysql', 'mariadb' => [...$config, 'database' => self::probeNamespace()],
             default => $config,
         };
     }
@@ -146,7 +234,7 @@ final class DriverMatrix
             // the probe connection can create its own schema. Unqualified DDL then lands
             // there, and nowhere else.
             DB::connection($connection)->statement(
-                'create schema if not exists "'.self::PROBE_NAMESPACE.'"',
+                'create schema if not exists "'.self::probeNamespace().'"',
             );
 
             return;
@@ -167,7 +255,7 @@ final class DriverMatrix
 
         try {
             DB::connection($bootstrap)->statement(
-                'create database if not exists `'.self::PROBE_NAMESPACE.'`',
+                'create database if not exists `'.self::probeNamespace().'`',
             );
         } finally {
             DB::purge($bootstrap);
@@ -191,8 +279,8 @@ final class DriverMatrix
         }
 
         return match ($settings['driver'] ?? null) {
-            'pgsql' => ($settings['search_path'] ?? null) === self::PROBE_NAMESPACE,
-            'mysql', 'mariadb' => ($settings['database'] ?? null) === self::PROBE_NAMESPACE,
+            'pgsql' => ($settings['search_path'] ?? null) === self::probeNamespace(),
+            'mysql', 'mariadb' => ($settings['database'] ?? null) === self::probeNamespace(),
             default => false,
         };
     }
@@ -239,6 +327,19 @@ final class DriverMatrix
     }
 
     /**
+     * The database a driver's connection opens: the location's (default `testing`), and — for
+     * the engine the suite itself runs on, under `--parallel` — that name with the worker's
+     * token, so no two workers share the database their teardown empties.
+     */
+    private static function database(string $driver): string
+    {
+        $database = self::location($driver, 'DATABASE', 'testing');
+        $token = $driver === self::driver() ? self::parallelToken() : null;
+
+        return $token === null ? $database : $database.'_'.$token;
+    }
+
+    /**
      * The active driver: `TESTING_DB_DRIVER`, defaulting to `sqlite`. An unrecognised value
      * throws — see {@see self::DRIVERS}.
      */
@@ -276,7 +377,7 @@ final class DriverMatrix
                 'driver' => 'pgsql',
                 'host' => self::location($driver, 'HOST', '127.0.0.1'),
                 'port' => self::location($driver, 'PORT', '5432'),
-                'database' => self::location($driver, 'DATABASE', 'testing'),
+                'database' => self::database($driver),
                 'username' => self::location($driver, 'USERNAME', 'testing'),
                 'password' => self::location($driver, 'PASSWORD', ''),
                 'charset' => 'utf8',
@@ -288,7 +389,7 @@ final class DriverMatrix
                 'driver' => $driver,
                 'host' => self::location($driver, 'HOST', '127.0.0.1'),
                 'port' => self::location($driver, 'PORT', '3306'),
-                'database' => self::location($driver, 'DATABASE', 'testing'),
+                'database' => self::database($driver),
                 'username' => self::location($driver, 'USERNAME', 'root'),
                 'password' => self::location($driver, 'PASSWORD', ''),
                 'charset' => 'utf8mb4',

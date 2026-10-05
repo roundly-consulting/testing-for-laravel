@@ -217,3 +217,57 @@ it('does not hand a sqlite-leg location to the mysql probe', function (): void {
     expect($pgsql)->toMatchArray(['host' => '10.9.9.9', 'port' => '5432', 'username' => 'ci'])
         ->and($mysql)->toMatchArray(['host' => '127.0.0.1', 'port' => '3306', 'username' => 'root']);
 });
+
+it('suffixes database and probe namespace with the parallel token', function (): void {
+    // Under `pest --parallel` every worker used to share the `testing` database and the
+    // `testing_probe` namespace, so one worker's teardown (drop every table) and probe drops
+    // pulled tables out from under another. A worker's token now names its own.
+    $configs = fn (array $env): array => json_decode(tap(new Process(
+        [PHP_BINARY, '-r', 'require "vendor/autoload.php"; use RoundlyConsulting\Testing\Database\DriverMatrix as M; '
+            .'echo json_encode([M::connectionConfig("pgsql"), M::connectionConfig("mysql"), M::probeConnectionConfig("pgsql"), M::probeConnectionConfig("mysql")]);'],
+        dirname(__DIR__, 2),
+        [...$env, 'TESTING_DB_HOST' => false, 'TESTING_DB_PORT' => false, 'TESTING_DB_DATABASE' => false],
+    ))->mustRun()->getOutput(), true, flags: JSON_THROW_ON_ERROR);
+
+    // A sqlite leg: the suite is :memory: per process already; the probes get the token.
+    [$pgsql, $mysql, $pgsqlProbe, $mysqlProbe] = $configs(['TESTING_DB_DRIVER' => false, 'TEST_TOKEN' => '3']);
+
+    expect($pgsql['database'])->toBe('testing')
+        ->and($mysql['database'])->toBe('testing')
+        ->and($pgsqlProbe['search_path'])->toBe('testing_probe_3')
+        ->and($mysqlProbe['database'])->toBe('testing_probe_3');
+
+    // A pgsql leg: the suite's own database gets the token too; the off-leg engine does not.
+    [$pgsql, $mysql, $pgsqlProbe] = $configs(['TESTING_DB_DRIVER' => 'pgsql', 'TEST_TOKEN' => '3']);
+
+    expect($pgsql['database'])->toBe('testing_3')
+        ->and($pgsqlProbe)->toMatchArray(['database' => 'testing_3', 'search_path' => 'testing_probe_3'])
+        ->and($mysql['database'])->toBe('testing');
+
+    // No token, no change.
+    [$pgsql, , $pgsqlProbe] = $configs(['TESTING_DB_DRIVER' => 'pgsql', 'TEST_TOKEN' => false]);
+
+    expect($pgsql['database'])->toBe('testing')
+        ->and($pgsqlProbe['search_path'])->toBe(DriverMatrix::PROBE_NAMESPACE);
+});
+
+it('creates the worker database on a real-engine leg, once per process', function (): void {
+    $base = DriverMatrix::connectionConfig()['database'];
+    $_SERVER['TEST_TOKEN'] = 'selftest';
+
+    try {
+        DriverMatrix::configure(app());
+        DriverMatrix::configure(app()); // memoised: the second call creates nothing
+
+        DB::purge('testing');
+
+        expect(config('database.connections.testing.database'))->toBe("{$base}_selftest")
+            ->and(DB::connection('testing')->selectOne('select current_database() as name')->name)->toBe("{$base}_selftest")
+            ->and(config('database.connections.pgsql.search_path'))->toBe(DriverMatrix::PROBE_NAMESPACE.'_selftest');
+    } finally {
+        unset($_SERVER['TEST_TOKEN']);
+        DB::purge('testing');
+        DriverMatrix::configure(app());
+        DB::connection('testing')->statement("drop database if exists \"{$base}_selftest\"");
+    }
+})->skip(fn (): bool => DriverMatrix::driver() !== 'pgsql' || isset($_SERVER['TEST_TOKEN']), 'pgsql leg, outside --parallel');
