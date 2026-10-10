@@ -6,6 +6,8 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 
 ## Unreleased
 
+## 1.2.0 - 2026-10-10
+
 ### Added
 
 - `expect(Facade::class)->toRedactSensitiveArguments(methods: N)` (and
