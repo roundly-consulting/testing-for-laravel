@@ -58,6 +58,10 @@ it('proves keys read through the toolkit float(), string() and list() readers, s
     expect(contractFailure('toolkit-typed-readers'))->toBe('');
 });
 
+it('proves keys read through the toolkit secret(), requireSecret() and secretList() readers, static and chained', function (): void {
+    expect(contractFailure('toolkit-secret-readers'))->toBe('');
+});
+
 it('does not count a float(), string() or list() call on anything that is not a toolkit reader', function (): void {
     $failure = contractFailure('toolkit-typed-readers-lookalikes');
 

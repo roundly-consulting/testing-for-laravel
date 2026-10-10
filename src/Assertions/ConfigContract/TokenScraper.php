@@ -125,11 +125,16 @@ final class TokenScraper
      * sensitive, so neither is the match.
      *
      * `float`, `string` and `list` (toolkit 1.2) are everyday names — a request's `string()`, a
-     * `list()` destructure — so, like the rest, they count only on a toolkit receiver.
+     * `list()` destructure — so, like the rest, they count only on a toolkit receiver. So do
+     * `secret`, `requireSecret` and `secretList` (toolkit 1.3) — a vault client's `secret()` is
+     * not a config read.
      *
      * @var list<string>
      */
-    private const array STRICT_READ_METHODS = ['boolean', 'integer', 'float', 'string', 'list', 'enum', 'oneof', 'requirestring'];
+    private const array STRICT_READ_METHODS = [
+        'boolean', 'integer', 'float', 'string', 'list', 'enum', 'oneof', 'requirestring',
+        'secret', 'requiresecret', 'secretlist',
+    ];
 
     private const string TOOLKIT_CONFIG = 'RoundlyConsulting\PackageToolkit\Support\Config';
 
@@ -300,7 +305,8 @@ final class TokenScraper
      *
      * A bare `Config` counts whatever it is imported as — the fleet's own
      * `PackageToolkit\Support\Config` helpers read keys by their first argument the same way,
-     * and so do its strict-only readers (`list`, `enum`, `oneOf`, `requireString`).
+     * and so do its strict-only readers (`list`, `enum`, `oneOf`, `requireString`, `secret`,
+     * `requireSecret`, `secretList`).
      *
      * `list` is a reserved word, and after `::` PHP keeps its own token: `Config::list(` is
      * `T_LIST`, not `T_STRING`. The `::` + `Config` anchor below is what keeps a `list(…) = …`
@@ -741,8 +747,8 @@ final class TokenScraper
      *
      *  - `ModelResolver::for('k')` / `::newModel('k')`, `KeyType::fromConfig('k')` — the
      *    toolkit class, resolved through the imports;
-     *  - `->boolean|integer|float|string|list|enum|oneOf|requireString('k')` on a
-     *    **validator**: the expression `Config::using(…)` / `Config::for(…)` /
+     *  - `->boolean|integer|float|string|list|enum|oneOf|requireString('k')` and
+     *    `->secret|requireSecret|secretList('k')` on a **validator**: the expression `Config::using(…)` / `Config::for(…)` /
      *    `ConfigValidator::forRepository|forArray(…)`, a method declared to return one
      *    (`self::validator()->…`), or a name declared or assigned as one;
      *  - `$this->bindFromConfig(Contract::class, 'k', …)` and `$this->observesModel('k', …)` in a
@@ -751,7 +757,7 @@ final class TokenScraper
      *  - `->hasRoutes('file.php', 'k')` / `->hasFacadeAlias(X::class, 'k')` on a chain rooted at
      *    a `Package` — the switch only, never the routes filename beside it.
      *
-     * (The static `Config::enum('k')` / `Config::list('k')` family is
+     * (The static `Config::enum('k')` / `Config::list('k')` / `Config::secret('k')` family is
      * {@see self::opensFacadeRead()}'s.) Named arguments resolve by parameter name, so
      * `enabledVia: 'k'` is found wherever it sits.
      *

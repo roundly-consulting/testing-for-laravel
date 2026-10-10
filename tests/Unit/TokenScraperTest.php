@@ -466,6 +466,65 @@ it('reads the float, string and list readers on the toolkit Config', function ()
         PHP)['reads'])->toBe(['shop.a', 'shop.b', 'shop.c', 'shop.d', 'shop.e', 'shop.f', 'shop.channels.*.hosts']);
 });
 
+it('reads the secret, requireSecret and secretList readers on the toolkit Config', function (): void {
+    expect(scrapeSource(<<<'PHP'
+        use RoundlyConsulting\PackageToolkit\Support\Config;
+        use RoundlyConsulting\PackageToolkit\Support\Config as Strict;
+
+        Config::secret('shop.a');
+        Config::requireSecret('shop.b');
+        Config::secretList('shop.c');
+        Config::SECRET('shop.d') ?? '';
+        Strict::requireSecret(key: 'shop.e');
+        \RoundlyConsulting\PackageToolkit\Support\Config::secretList('shop.f', fn ($v) => true);
+        Config::secret("shop.providers.{$driver}.secret");
+        PHP)['reads'])->toBe(['shop.a', 'shop.b', 'shop.c', 'shop.d', 'shop.e', 'shop.f', 'shop.providers.*.secret']);
+});
+
+it('reads secret, requireSecret and secretList on a validator from a method or a variable', function (): void {
+    expect(scrapeSource(<<<'PHP'
+        use RoundlyConsulting\PackageToolkit\Support\Config;
+        use RoundlyConsulting\PackageToolkit\Support\ConfigValidator;
+
+        final class Settings
+        {
+            public function __construct(private readonly ConfigValidator $strict) {}
+
+            public function read(array $values): void
+            {
+                self::validator()->secret('shop.a');
+                $this->validator()->requireSecret('shop.b');
+                $this->strict->secretList('shop.c');
+
+                $read = Config::for($values, Failure::class);
+                $read->secret('shop.d');
+            }
+
+            private static function ring(ConfigValidator $read): array
+            {
+                return $read->secretList('shop.e', fn ($v) => true);
+            }
+
+            private static function validator(): ConfigValidator
+            {
+                return Config::using(Failure::class);
+            }
+        }
+        PHP)['reads'])->toBe(['shop.a', 'shop.b', 'shop.c', 'shop.d', 'shop.e']);
+});
+
+it('flags an unresolvable key handed to a secret reader on the repository', function (): void {
+    $result = scrapeSource(<<<'PHP'
+        use RoundlyConsulting\PackageToolkit\Support\Config;
+
+        Config::requireSecret($this->keyFor('shop.token'));
+        Config::using(Failure::class)->secret("shop.{$key}");
+        PHP);
+
+    expect($result['reads'])->toBe([])
+        ->and($result['interpolations'])->toHaveCount(2);
+});
+
 it('reads float, string and list on a validator from a method or a variable', function (): void {
     expect(scrapeSource(<<<'PHP'
         use RoundlyConsulting\PackageToolkit\Support\Config;
@@ -527,6 +586,14 @@ it('reads a strict reader chained off a validator factory', function (string $ca
     'for()->list()' => "Config::for(['shop' => ['k' => \$raw]], Failure::class)->list('shop.k', []);",
     'forRepository()->string()' => "ConfigValidator::forRepository()->string(key: 'shop.k', default: '');",
     'forArray()->float()' => "ConfigValidator::forArray(\$values)->float('shop.k', 0.5);",
+    'using()->secret()' => "Config::using(Failure::class)->secret('shop.k');",
+    'using()->requireSecret() across lines' => "Config::using(Failure::class)\n    ->requireSecret('shop.k');",
+    'using()?->secretList()' => "Config::using(Failure::class)?->secretList('shop.k', fn (\$v) => true);",
+    'for()->secret()' => "Config::for(['shop' => ['k' => \$raw]])->secret('shop.k');",
+    'for()->requireSecret()' => "Config::for(\$values, Failure::class)->requireSecret(key: 'shop.k');",
+    'for()->secretList()' => "Config::for(\$values)->secretList('shop.k');",
+    'forRepository()->secret()' => "ConfigValidator::forRepository()->secret('shop.k') ?? '';",
+    'forArray()->secretList()' => "ConfigValidator::forArray(\$values, Failure::class)->secretList('shop.k');",
 ]);
 
 it('reads a strict reader chained off a method that returns a validator', function (): void {
@@ -739,4 +806,11 @@ it('does not read a same-named method on something that is not a toolkit reader'
     'a list() on $this' => "final class Thing { public function all(): array { return \$this->list('shop.a', []); } }",
     'a method declared list()' => "final class Thing { public function list(string \$key = 'shop.a'): array { return []; } }",
     'a static declared string()' => "final class Thing { public static function string(string \$key = 'shop.a'): string { return ''; } }",
+    // `secret` is an everyday name too — a vault client, a request, the package's own helper.
+    'another class secret()' => "Vault::secret('shop.a');",
+    'another class requireSecret()' => "Secrets::requireSecret('shop.a');",
+    'another class using()->secretList()' => "Cache::using(Store::class)->secretList('shop.a');",
+    'an untyped variable secret()' => "\$vault->secret('shop.a');",
+    'a secret() on $this' => "final class Thing { public function key(): ?string { return \$this->secret('shop.a'); } }",
+    'a method declared secretList()' => "final class Thing { public function secretList(string \$key = 'shop.a'): array { return []; } }",
 ]);

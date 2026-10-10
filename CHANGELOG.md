@@ -6,6 +6,15 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 
 ## Unreleased
 
+### Fixed
+
+- The config contract counts keys read through package-toolkit-for-laravel 1.3's secret
+  readers: `Config::secret()`, `Config::requireSecret()` and `Config::secretList()`, and the
+  same three on a `ConfigValidator` (`Config::using(…)->secret()`, `Config::for(…)->secretList()`,
+  `self::validator()->requireSecret()`, …). A package that moved a setting to them failed its
+  config-contract test with the key reported as unread. Same-named methods on anything that is
+  not a toolkit reader (a vault client's `secret()`) still do not count.
+
 ## 1.2.0 - 2026-10-10
 
 ### Added
