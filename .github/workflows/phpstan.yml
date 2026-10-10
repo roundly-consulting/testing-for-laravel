@@ -19,5 +19,8 @@ jobs:
       - name: Install composer dependencies
         uses: ramsey/composer-install@v4
 
+      - name: Show Pest version
+        run: composer show pestphp/pest
+
       - name: Run PHPStan
         run: composer analyse -- --error-format=github

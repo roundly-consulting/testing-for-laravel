@@ -12,14 +12,21 @@ jobs:
         os: [ubuntu-latest]
         php: [8.4]
         laravel: [12.*, 13.*]
+        # Pest sits in this package's require, so both majors are supported surface. Without
+        # this axis the L13 leg would silently move to Pest 5 and Pest 4 would lose L13.
+        pest: [4.*, 5.*]
         stability: [prefer-stable]
+        exclude:
+          # Pest 5 needs PHPUnit 13 and symfony/process 8; Laravel 12 / Testbench 10 can't.
+          - laravel: 12.*
+            pest: 5.*
         include:
           - laravel: 12.*
             testbench: 10.*
           - laravel: 13.*
             testbench: 11.*
 
-    name: P${{ matrix.php }} - L${{ matrix.laravel }} - ${{ matrix.stability }} - ${{ matrix.os }}
+    name: P${{ matrix.php }} - L${{ matrix.laravel }} - Pest ${{ matrix.pest }} - ${{ matrix.stability }} - ${{ matrix.os }}
 
     steps:
       - name: Checkout code
@@ -40,10 +47,26 @@ jobs:
       - name: Install dependencies
         run: |
           composer require --dev "laravel/framework:${{ matrix.laravel }}" "orchestra/testbench:${{ matrix.testbench }}" --no-interaction --no-update
-          composer update --${{ matrix.stability }} --prefer-dist --no-interaction
+          # --with narrows Pest to the leg's major for this resolve only: composer.json keeps
+          # the committed ^4.0|^5.0, which the suite itself pins.
+          composer update --${{ matrix.stability }} --prefer-dist --no-interaction \
+            --with "pestphp/pest:${{ matrix.pest }}" \
+            --with "pestphp/pest-plugin-laravel:${{ matrix.pest }}"
 
       - name: List Installed Dependencies
         run: composer show -D
+
+      - name: Verify Pest major
+        # A leg must never run the other major and still report green under its name.
+        run: |
+          installed="$(composer show pestphp/pest --format=json | jq -r '.versions[0]')"
+          expected="${{ matrix.pest }}"
+          echo "pestphp/pest ${installed} (leg: ${expected})"
+          major="${installed#v}"
+          if [ "${major%%.*}" != "${expected%%.*}" ]; then
+            echo "::error::Pest ${installed} installed on the Pest ${expected} leg"
+            exit 1
+          fi
 
       - name: Execute tests
         run: vendor/bin/pest --coverage --min=90
@@ -80,6 +103,9 @@ jobs:
 
       - name: Install dependencies
         run: composer update --prefer-stable --prefer-dist --no-interaction
+
+      - name: Show Pest version
+        run: composer show pestphp/pest
 
       - name: Execute tests against postgres
         env:
