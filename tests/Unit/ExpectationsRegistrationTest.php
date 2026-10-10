@@ -19,6 +19,12 @@ it('registers idempotently', function (): void {
     expect(Expectations::registered())->toBeTrue();
 });
 
+// CI runs this suite on Pest 4 and Pest 5; the bootable case below then proves the plugin
+// hook on whichever major the leg installed.
+it('runs on a supported pest major', function (): void {
+    expect((int) explode('.', Pest\version())[0])->toBeIn([4, 5]);
+});
+
 it('registers through the pest plugin bootable', function (): void {
     Expectations::flush();
 

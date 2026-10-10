@@ -6,6 +6,12 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 
 ## Unreleased
 
+### Added
+
+- Pest 5 support: the package now installs with `pestphp/pest` `^4.0|^5.0`, so a Pest 5 suite
+  can `require --dev` it. Pest 5 needs PHPUnit 13, which means Laravel 13; Pest 4 keeps working
+  on Laravel 12 and 13. Every expectation and arch preset behaves the same on both majors.
+
 ## 1.0.2 - 2026-10-10
 
 ### Fixed
