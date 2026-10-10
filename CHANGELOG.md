@@ -6,6 +6,8 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 
 ## Unreleased
 
+## 1.0.2 - 2026-10-10
+
 ### Fixed
 
 - The config contract counts keys read through package-toolkit-for-laravel 1.2's new readers:
