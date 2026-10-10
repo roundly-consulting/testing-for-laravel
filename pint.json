@@ -1,6 +1,7 @@
 {
     "preset": "laravel",
     "notPath": [
-        "tests/Fixtures/Arch/debug/mixed-case/MixedCaseLeftover.php"
+        "tests/Fixtures/Arch/debug/mixed-case/MixedCaseLeftover.php",
+        "tests/Fixtures/Arch/VendorNamespace"
     ]
 }

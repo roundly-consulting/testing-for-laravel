@@ -6,6 +6,7 @@ use RoundlyConsulting\Testing\Arch\ArchPresets;
 use RoundlyConsulting\Testing\Tests\Fixtures\Arch\Shadow\Gateway;
 use RoundlyConsulting\Testing\Tests\Fixtures\Arch\Shadow\Provider;
 use RoundlyConsulting\Testing\Tests\Fixtures\Arch\ShadowGreen\Driver;
+use RoundlyConsulting\Testing\Tests\Fixtures\Arch\VendorNamespace\Leaky\PsrClient;
 use RoundlyConsulting\Testing\Tests\Fixtures\Facades\Widgets\Models\Widget;
 use RoundlyConsulting\Testing\Tests\Fixtures\Facades\Widgets\Traits\HasWidgets;
 
@@ -21,6 +22,12 @@ ArchPresets::modelsResolveThroughSeam($archFixture('seam/green'));
 ArchPresets::morphColumnsUseTheSeam($archFixture('morph-seam/seam'));
 
 ArchPresets::runtimeRequireIsWhitelisted($archFixture('composer/whitelisted.json'));
+
+ArchPresets::noVendorNamespace(['GuzzleHttp', 'App'], $archFixture('VendorNamespace/Green'));
+
+// A live exemption list: PsrClient does import GuzzleHttp\Psr7\Utils, and is exempted — so the
+// preset case and the existence pin it registers must both pass.
+ArchPresets::noVendorNamespace('GuzzleHttp', $archFixture('VendorNamespace/Leaky'), [PsrClient::class]);
 
 ArchPresets::modelsGoThroughTheFacade('RoundlyConsulting\Testing\Tests\Fixtures\Facades\Teams');
 

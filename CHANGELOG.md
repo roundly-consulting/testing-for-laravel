@@ -17,6 +17,13 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
   raw arguments. So does a facade that hides every argument. `methods: N` pins how many root
   methods take a secret (at least 1). On a contract accessor, the class bound under it must mark
   the same parameters.
+- `ArchPresets::noVendorNamespace($prefixes, $srcDir, $ignoring)`: nothing under `$srcDir`
+  (default `src/`) may name a namespace under one of `$prefixes`, e.g.
+  `noVendorNamespace(['GuzzleHttp', 'App'])`. Pest's `->not->toUse('GuzzleHttp')` stays green
+  when `src/` imports `GuzzleHttp\Psr7\Utils`, because it only sees classes under an installed
+  PSR-4 root. It also misses vendors that are not installed and host names like `App\`. This
+  preset reads the names from source and resolves them through the file's namespace and `use`
+  imports, so it catches all three. It fails on a missing directory or one with no PHP file.
 
 ## 1.1.0 - 2026-10-10
 

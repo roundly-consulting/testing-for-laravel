@@ -24,6 +24,10 @@ ArchPresets::finalByDefault('RoundlyConsulting\Testing', [
 
 ArchPresets::noDebuggingLeftovers();
 
+// A dev-only package must not reach into a host application, nor into Guzzle (Laravel's HTTP
+// engine, not a dependency of this package).
+ArchPresets::noVendorNamespace(['App', 'GuzzleHttp'], __DIR__.'/../../src');
+
 // The app-facing promise: the static assertion surface (Assert / Expectations / arch
 // presets / assertion implementations) must be usable in any Laravel app with no
 // Testbench installed. Only the package base case and its concerns may touch Testbench.

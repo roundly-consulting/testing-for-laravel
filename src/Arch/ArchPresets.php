@@ -7,7 +7,7 @@ namespace RoundlyConsulting\Testing\Arch;
 use PHPUnit\Architecture\Elements\ObjectDescription;
 
 /**
- * Nine composable architecture presets, each grounded in a bug the fleet actually
+ * Ten composable architecture presets, each grounded in a bug the fleet actually
  * shipped. Call one at the top level of a Pest arch file; it registers its own case.
  *
  * ```php
@@ -33,12 +33,12 @@ use PHPUnit\Architecture\Elements\ObjectDescription;
  * {@see self::finalByDefault()}, {@see self::noLocalCryptoPrimitives()}) return the
  * underlying arch expectation, so Pest's fluent `->ignoring(...)` also composes on them —
  * **unchecked**. The same bogus entry fails through the parameter and passes green through
- * the fluent call, and the docs used to teach the fluent one. The six presets Pest's arch
+ * the fluent call, and the docs used to teach the fluent one. The seven presets Pest's arch
  * layer cannot express ({@see self::swappableModelsAreNotFinal()},
  * {@see self::modelsResolveThroughSeam()}, {@see self::morphColumnsUseTheSeam()},
  * {@see self::runtimeRequireIsWhitelisted()}, {@see self::noDebuggingLeftovers()},
- * {@see self::modelsGoThroughTheFacade()}) register a token/reflection `it()` case and have no
- * fluent form at all.
+ * {@see self::noVendorNamespace()}, {@see self::modelsGoThroughTheFacade()}) register a
+ * token/reflection `it()` case and have no fluent form at all.
  *
  * The gap is **stated rather than fixed**. `->ignoring()` is Pest's own method on an
  * `@internal` object whose `__destruct()` is what evaluates the expectation; intercepting it
@@ -451,6 +451,51 @@ final class ArchPresets
 
         return it('preset: '.$label, function () use ($srcDir, $ignoring): void {
             DebugLeftovers::assert($srcDir, $ignoring);
+        });
+    }
+
+    /**
+     * Nothing under `$srcDir` names a namespace under any of `$prefixes`: a vendor the package
+     * must not depend on directly (`GuzzleHttp`), or a host namespace (`App`).
+     *
+     * ```php
+     * ArchPresets::noVendorNamespace(['GuzzleHttp', 'App'], __DIR__.'/../../src');
+     * ```
+     *
+     * Scanned from **source tokens**, because `->not->toUse('GuzzleHttp')` cannot fail where
+     * it matters: Pest's arch layer expands a name only into classes under an installed PSR-4
+     * root at or above it, so it misses a sibling package under the vendor prefix
+     * (`GuzzleHttp\Psr7\Utils`), a vendor that is not installed, and a host `App\` — all
+     * measured in the fleet's 2026-10 sweep. Names resolve through the file's namespace and
+     * `use` imports (aliases, groups, `use function` / `use const`, fully-qualified and
+     * qualified names); comments, docblocks and strings do not count. A missing directory, a
+     * scan that finds no PHP file and a prefix covering the scanned code's own namespace fail.
+     * See {@see VendorNamespaces}.
+     *
+     * `$srcDir` defaults to `src/` under the working directory, as for
+     * {@see self::noDebuggingLeftovers()}.
+     *
+     * @param  string|list<string>  $prefixes  namespace prefixes to ban (`'GuzzleHttp'`, `['App', 'Mockery']`)
+     * @param  string|null  $srcDir  the directory to scan; defaults to `<cwd>/src`
+     * @param  list<string>  $ignoring  class/namespace exemptions — pinned by {@see self::exemptionsExist()}
+     */
+    public static function noVendorNamespace(string|array $prefixes, ?string $srcDir = null, array $ignoring = []): mixed
+    {
+        $prefixes = is_string($prefixes) ? [$prefixes] : array_values($prefixes);
+        $srcDir ??= getcwd().'/src';
+
+        // No trailing `\` in a case name: Pest's output reads it as an escape.
+        $label = 'never references '.implode(', ', array_map(
+            static fn (string $prefix): string => trim($prefix, '\\'),
+            $prefixes,
+        ));
+
+        if ($ignoring !== []) {
+            self::exemptionsExist($ignoring, $label);
+        }
+
+        return it('preset: '.$label, function () use ($prefixes, $srcDir, $ignoring): void {
+            VendorNamespaces::assert($prefixes, $srcDir, $ignoring);
         });
     }
 
