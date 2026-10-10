@@ -54,6 +54,20 @@ it('proves every shipped key read only through the toolkit readers, with no opti
     expect(contractFailure('toolkit-readers'))->toBe('');
 });
 
+it('proves keys read through the toolkit float(), string() and list() readers, static and chained', function (): void {
+    expect(contractFailure('toolkit-typed-readers'))->toBe('');
+});
+
+it('does not count a float(), string() or list() call on anything that is not a toolkit reader', function (): void {
+    $failure = contractFailure('toolkit-typed-readers-lookalikes');
+
+    expect($failure)->toContain('REVERSE');
+
+    foreach (['title', 'ratio', 'slug', 'hosts', 'name', 'channels', 'mirrors'] as $leaf) {
+        expect($failure)->toContain("shop.{$leaf}");
+    }
+});
+
 // ---------------------------------------------------------------------------
 // A write is not a read.
 // ---------------------------------------------------------------------------

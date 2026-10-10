@@ -451,6 +451,53 @@ it('reads every static strict reader on the toolkit Config', function (): void {
         PHP)['reads'])->toBe(['shop.a', 'shop.b', 'shop.c', 'shop.d', 'shop.e']);
 });
 
+it('reads the float, string and list readers on the toolkit Config', function (): void {
+    expect(scrapeSource(<<<'PHP'
+        use RoundlyConsulting\PackageToolkit\Support\Config;
+        use RoundlyConsulting\PackageToolkit\Support\Config as Strict;
+
+        Config::float('shop.a', 1.0, min: 0.0);
+        Config::string('shop.b', 'en');
+        Config::list('shop.c', []);
+        Config::LIST('shop.d', []);
+        Strict::list(default: ['x'], key: 'shop.e');
+        \RoundlyConsulting\PackageToolkit\Support\Config::list('shop.f', [], fn ($v) => true);
+        Config::list("shop.channels.{$surface}.hosts", []);
+        PHP)['reads'])->toBe(['shop.a', 'shop.b', 'shop.c', 'shop.d', 'shop.e', 'shop.f', 'shop.channels.*.hosts']);
+});
+
+it('reads float, string and list on a validator from a method or a variable', function (): void {
+    expect(scrapeSource(<<<'PHP'
+        use RoundlyConsulting\PackageToolkit\Support\Config;
+        use RoundlyConsulting\PackageToolkit\Support\ConfigValidator;
+
+        final class Settings
+        {
+            public function __construct(private readonly ConfigValidator $strict) {}
+
+            public function read(array $values): void
+            {
+                self::validator()->float('shop.a', 1.0);
+                $this->validator()->string('shop.b', '');
+                $this->strict->list('shop.c', []);
+
+                $read = Config::for($values, Failure::class);
+                $read->list('shop.d', [], fn ($v) => true);
+            }
+
+            private static function skew(ConfigValidator $read): float
+            {
+                return $read->float('shop.e', 0.0);
+            }
+
+            private static function validator(): ConfigValidator
+            {
+                return Config::using(Failure::class);
+            }
+        }
+        PHP)['reads'])->toBe(['shop.a', 'shop.b', 'shop.c', 'shop.d', 'shop.e']);
+});
+
 it('reads the toolkit Config under an import alias', function (): void {
     expect(scrapeSource(<<<'PHP'
         use RoundlyConsulting\PackageToolkit\Support\Config as Strict;
@@ -473,6 +520,13 @@ it('reads a strict reader chained off a validator factory', function (string $ca
     'forRepository()' => "ConfigValidator::forRepository()->integer('shop.k', 1);",
     'forArray()' => "ConfigValidator::forArray(\$values, Failure::class)?->requireString('shop.k');",
     'fully-qualified' => "\\RoundlyConsulting\\PackageToolkit\\Support\\Config::using(Failure::class)->boolean('shop.k');",
+    'using()->float()' => "Config::using(Failure::class)->float('shop.k', 1.0, max: 2.0);",
+    'using()->string()' => "Config::using(Failure::class)->string('shop.k', 'x');",
+    'using()->list() across lines' => "Config::using(Failure::class)\n    ->list('shop.k', [], fn (\$v) => is_string(\$v));",
+    'using()?->list()' => "Config::using(Failure::class)?->list('shop.k', []);",
+    'for()->list()' => "Config::for(['shop' => ['k' => \$raw]], Failure::class)->list('shop.k', []);",
+    'forRepository()->string()' => "ConfigValidator::forRepository()->string(key: 'shop.k', default: '');",
+    'forArray()->float()' => "ConfigValidator::forArray(\$values)->float('shop.k', 0.5);",
 ]);
 
 it('reads a strict reader chained off a method that returns a validator', function (): void {
@@ -674,4 +728,15 @@ it('does not read a same-named method on something that is not a toolkit reader'
     'modelClass() without ResolvesModels' => "final class Thing { public function boot(): void { \$this->modelClass('shop.a'); } }",
     'hasRoutes() off something that is not a Package' => "\$router->group()->hasRoutes('shop.php', 'shop.a');",
     'the array a validator is handed' => "use RoundlyConsulting\\PackageToolkit\\Support\\Config;\nConfig::for(['shop.a' => \$value]);",
+    // `string`, `float` and `list` are everyday names — only a toolkit receiver makes them a read.
+    'a list() destructure' => "list('shop.a' => \$a, 'shop.b' => \$b) = \$values;",
+    'a nested list() destructure' => "foreach (\$rows as list('shop.a' => \$a)) {}",
+    'a request string()' => "\$request->string('shop.a');",
+    'a request float()' => "\$request->float('shop.a', 0.0);",
+    'a Stringable string()' => "Str::of(\$value)->string('shop.a');",
+    'another class list()' => "Settings::list('shop.a', []);",
+    'another class using()->list()' => "Cache::using(Store::class)->list('shop.a', []);",
+    'a list() on $this' => "final class Thing { public function all(): array { return \$this->list('shop.a', []); } }",
+    'a method declared list()' => "final class Thing { public function list(string \$key = 'shop.a'): array { return []; } }",
+    'a static declared string()' => "final class Thing { public static function string(string \$key = 'shop.a'): string { return ''; } }",
 ]);

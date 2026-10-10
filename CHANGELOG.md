@@ -6,6 +6,13 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 
 ## Unreleased
 
+### Fixed
+
+- The config contract counts keys read through package-toolkit-for-laravel 1.2's new readers:
+  `Config::list()`, and `float()`, `string()` and `list()` on a `ConfigValidator`
+  (`Config::using(…)->string()`, `Config::for(…)->list()`, `self::validator()->float()`, …).
+  Drop the `allowUnread` / `extraReadPrefixes` entries you added for them.
+
 ## 1.0.1 - 2026-10-05
 
 ### Changed

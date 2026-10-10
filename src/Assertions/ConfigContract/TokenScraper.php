@@ -124,9 +124,12 @@ final class TokenScraper
      * each taking the key as its first argument. Lowercased: PHP method names are not case
      * sensitive, so neither is the match.
      *
+     * `float`, `string` and `list` (toolkit 1.2) are everyday names — a request's `string()`, a
+     * `list()` destructure — so, like the rest, they count only on a toolkit receiver.
+     *
      * @var list<string>
      */
-    private const array STRICT_READ_METHODS = ['boolean', 'integer', 'enum', 'oneof', 'requirestring'];
+    private const array STRICT_READ_METHODS = ['boolean', 'integer', 'float', 'string', 'list', 'enum', 'oneof', 'requirestring'];
 
     private const string TOOLKIT_CONFIG = 'RoundlyConsulting\PackageToolkit\Support\Config';
 
@@ -297,7 +300,11 @@ final class TokenScraper
      *
      * A bare `Config` counts whatever it is imported as — the fleet's own
      * `PackageToolkit\Support\Config` helpers read keys by their first argument the same way,
-     * and so do its strict-only readers (`enum`, `oneOf`, `requireString`).
+     * and so do its strict-only readers (`list`, `enum`, `oneOf`, `requireString`).
+     *
+     * `list` is a reserved word, and after `::` PHP keeps its own token: `Config::list(` is
+     * `T_LIST`, not `T_STRING`. The `::` + `Config` anchor below is what keeps a `list(…) = …`
+     * destructure out.
      *
      * @param  list<array{0: int|null, 1: string}>  $tokens
      * @param  array<string, string>  $imports
@@ -306,7 +313,7 @@ final class TokenScraper
     {
         [$id, $text] = $tokens[$i];
 
-        if ($id !== T_STRING
+        if (! in_array($id, [T_STRING, T_LIST], true)
             || (! in_array($text, self::READ_METHODS, true) && ! in_array(strtolower($text), self::STRICT_READ_METHODS, true))) {
             return false;
         }
@@ -734,18 +741,19 @@ final class TokenScraper
      *
      *  - `ModelResolver::for('k')` / `::newModel('k')`, `KeyType::fromConfig('k')` — the
      *    toolkit class, resolved through the imports;
-     *  - `->boolean|integer|enum|oneOf|requireString('k')` on a **validator**: the expression
-     *    `Config::using(…)` / `Config::for(…)` / `ConfigValidator::forRepository|forArray(…)`, a
-     *    method declared to return one (`self::validator()->…`), or a name declared or
-     *    assigned as one;
+     *  - `->boolean|integer|float|string|list|enum|oneOf|requireString('k')` on a
+     *    **validator**: the expression `Config::using(…)` / `Config::for(…)` /
+     *    `ConfigValidator::forRepository|forArray(…)`, a method declared to return one
+     *    (`self::validator()->…`), or a name declared or assigned as one;
      *  - `$this->bindFromConfig(Contract::class, 'k', …)` and `$this->observesModel('k', …)` in a
      *    class extending the toolkit's `PackageServiceProvider`;
      *  - `$this->modelClass('k')` / `->newModel('k')` in a class using `ResolvesModels`;
      *  - `->hasRoutes('file.php', 'k')` / `->hasFacadeAlias(X::class, 'k')` on a chain rooted at
      *    a `Package` — the switch only, never the routes filename beside it.
      *
-     * (The static `Config::enum('k')` family is {@see self::opensFacadeRead()}'s.) Named
-     * arguments resolve by parameter name, so `enabledVia: 'k'` is found wherever it sits.
+     * (The static `Config::enum('k')` / `Config::list('k')` family is
+     * {@see self::opensFacadeRead()}'s.) Named arguments resolve by parameter name, so
+     * `enabledVia: 'k'` is found wherever it sits.
      *
      * Returned with whether the read validates a handed array rather than the repository.
      *
