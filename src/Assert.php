@@ -14,6 +14,7 @@ use RoundlyConsulting\Testing\Assertions\ConfigContract\ConfigContract;
 use RoundlyConsulting\Testing\Assertions\Facades\ActionReach;
 use RoundlyConsulting\Testing\Assertions\Facades\FacadeDocblock;
 use RoundlyConsulting\Testing\Assertions\Facades\FacadeFake;
+use RoundlyConsulting\Testing\Assertions\Facades\FacadeRedaction;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationAutoload;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationGraph;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationPublish;
@@ -203,5 +204,19 @@ final class Assert
     public static function facadeReachesEveryAction(string $facade, string $actionsDir, array $except = [], array $via = []): void
     {
         ActionReach::assert($facade, $actionsDir, $except, $via);
+    }
+
+    /**
+     * Secondary escape hatch for `expect($facade)->toRedactSensitiveArguments(methods: N)`: pin
+     * that a call through the facade keeps every root argument marked `#[SensitiveParameter]`
+     * out of every stack frame, and every other argument visible in the facade's own frame.
+     * `$methods` pins how many root methods take a secret (at least 1); a contract accessor is
+     * compared with the class bound under it, which needs the booted application.
+     *
+     * @param  class-string<Facade>|string  $facade
+     */
+    public static function facadeRedactsSensitiveArguments(string $facade, int $methods): void
+    {
+        FacadeRedaction::assert($facade, $methods);
     }
 }

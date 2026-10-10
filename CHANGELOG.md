@@ -6,6 +6,18 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 
 ## Unreleased
 
+### Added
+
+- `expect(Facade::class)->toRedactSensitiveArguments(methods: N)` (and
+  `Assert::facadeRedactsSensitiveArguments()`): a call through the facade must keep every root
+  argument marked `#[SensitiveParameter]` out of every stack frame, and every other argument
+  visible in the facade's own frame. It swaps in a root that throws, calls each method through
+  the facade (positionally and with named arguments) with `zend.exception_ignore_args` off, and
+  reads the frame arguments. A stock Laravel facade fails it: its `__callStatic` frame holds the
+  raw arguments. So does a facade that hides every argument. `methods: N` pins how many root
+  methods take a secret (at least 1). On a contract accessor, the class bound under it must mark
+  the same parameters.
+
 ## 1.1.0 - 2026-10-10
 
 ### Added

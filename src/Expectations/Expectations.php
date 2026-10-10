@@ -12,6 +12,7 @@ use RoundlyConsulting\Testing\Assertions\ConfigContract\ConfigContract;
 use RoundlyConsulting\Testing\Assertions\Facades\ActionReach;
 use RoundlyConsulting\Testing\Assertions\Facades\FacadeDocblock;
 use RoundlyConsulting\Testing\Assertions\Facades\FacadeFake;
+use RoundlyConsulting\Testing\Assertions\Facades\FacadeRedaction;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationAutoload;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationGraph;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationPublish;
@@ -114,6 +115,12 @@ final class Expectations
 
         expect()->extend('toReachEveryAction', function (string $actionsDir, array $except = [], array $via = []): mixed {
             ActionReach::assert((string) $this->value, $actionsDir, $except, $via);
+
+            return $this;
+        });
+
+        expect()->extend('toRedactSensitiveArguments', function (int $methods): mixed {
+            FacadeRedaction::assert((string) $this->value, $methods);
 
             return $this;
         });

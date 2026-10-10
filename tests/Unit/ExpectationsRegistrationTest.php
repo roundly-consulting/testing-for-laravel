@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use Pest\Expectation;
 use RoundlyConsulting\Testing\Expectations\Expectations;
 use RoundlyConsulting\Testing\Pest\Plugin;
 
@@ -38,3 +39,29 @@ it('exposes the toHaveRunnableMigrationOrder expectation once registered', funct
 
     expect(fixturePath('green/bare-constrained'))->toHaveRunnableMigrationOrder(1);
 });
+
+// Pest keeps extensions in one static list, so an expectation registered once stays registered
+// for the whole process. Taking it out first is the only way to prove each path adds it.
+it('adds toRedactSensitiveArguments through both registration paths', function (Closure $path): void {
+    $extends = new ReflectionProperty(Expectation::class, 'extends');
+    $saved = $extends->getValue();
+
+    try {
+        $without = $saved;
+        unset($without['toRedactSensitiveArguments']);
+        $extends->setValue(null, $without);
+        Expectations::flush();
+
+        expect(Expectation::hasExtend('toRedactSensitiveArguments'))->toBeFalse();
+
+        $path();
+
+        expect(Expectation::hasExtend('toRedactSensitiveArguments'))->toBeTrue();
+    } finally {
+        $extends->setValue(null, $saved);
+    }
+})->with([
+    // The parameter is typed Closure, so Pest hands these over uncalled.
+    'register()' => fn () => Expectations::register(),
+    'the pest plugin' => fn () => (new Plugin)->boot(),
+]);
