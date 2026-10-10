@@ -54,8 +54,10 @@ it('registers the real-engine connections isolated from the suite connection', f
     //
     // Runs on EVERY leg and touches no engine: random execution order hid the original
     // bug for weeks, so this pin must not depend on a seed or on a service being up.
-    expect(config('database.connections.pgsql.search_path'))->toBe(DriverMatrix::PROBE_NAMESPACE)
-        ->and(config('database.connections.mysql.database'))->toBe(DriverMatrix::PROBE_NAMESPACE);
+    // probeNamespace() is PROBE_NAMESPACE, plus the worker token under `pest --parallel`.
+    expect(DriverMatrix::probeNamespace())->toStartWith(DriverMatrix::PROBE_NAMESPACE)
+        ->and(config('database.connections.pgsql.search_path'))->toBe(DriverMatrix::probeNamespace())
+        ->and(config('database.connections.mysql.database'))->toBe(DriverMatrix::probeNamespace());
 });
 
 it('routes the default connection through the driver matrix', function (): void {

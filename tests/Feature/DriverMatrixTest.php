@@ -78,14 +78,16 @@ it('registers the real-engine connections from a single source of truth', functi
 // ---------------------------------------------------------------------------
 
 it('confines the real-engine probes to their own namespace', function (): void {
-    expect(DriverMatrix::probeConnectionConfig('pgsql'))->toMatchArray([
-        'driver' => 'pgsql',
-        'database' => 'testing',
-        'search_path' => DriverMatrix::PROBE_NAMESPACE,
-    ])
+    // probeNamespace() is PROBE_NAMESPACE, plus the worker token under `pest --parallel`.
+    expect(DriverMatrix::probeNamespace())->toStartWith(DriverMatrix::PROBE_NAMESPACE)
+        ->and(DriverMatrix::probeConnectionConfig('pgsql'))->toMatchArray([
+            'driver' => 'pgsql',
+            'database' => 'testing',
+            'search_path' => DriverMatrix::probeNamespace(),
+        ])
         ->and(DriverMatrix::probeConnectionConfig('mysql'))->toMatchArray([
             'driver' => 'mysql',
-            'database' => DriverMatrix::PROBE_NAMESPACE,
+            'database' => DriverMatrix::probeNamespace(),
         ]);
 });
 
