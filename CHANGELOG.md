@@ -6,6 +6,8 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 
 ## Unreleased
 
+## 1.1.0 - 2026-10-10
+
 ### Added
 
 - Pest 5 support: the package now installs with `pestphp/pest` `^4.0|^5.0`, so a Pest 5 suite
