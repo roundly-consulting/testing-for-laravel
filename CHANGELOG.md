@@ -6,6 +6,8 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 
 ## Unreleased
 
+## 1.3.0 - 2026-10-11
+
 ### Changed
 
 - `ArchPresets::runtimeRequireIsWhitelisted()` fails an `$alsoAllow` entry that forgives
