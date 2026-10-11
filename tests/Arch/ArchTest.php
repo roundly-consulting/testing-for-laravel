@@ -24,6 +24,14 @@ ArchPresets::finalByDefault('RoundlyConsulting\Testing', [
 
 ArchPresets::noDebuggingLeftovers();
 
+// The dev-only carve-out (root CLAUDE.md): consumers only ever `require-dev` this package,
+// and a consumer's require-dev installs our `require`, never our `require-dev` — so the test
+// machinery has to live in `require`. Named here so a new vendor has to be argued for.
+ArchPresets::runtimeRequireIsWhitelisted(__DIR__.'/../../composer.json', alsoAllow: [
+    'orchestra/testbench',
+    'pestphp/pest',
+]);
+
 // A dev-only package must not reach into a host application, nor into Guzzle (Laravel's HTTP
 // engine, not a dependency of this package).
 ArchPresets::noVendorNamespace(['App', 'GuzzleHttp'], __DIR__.'/../../src');
