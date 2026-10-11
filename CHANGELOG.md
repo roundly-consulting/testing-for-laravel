@@ -6,6 +6,8 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 
 ## Unreleased
 
+## 1.4.0 - 2026-10-11
+
 ### Changed
 
 - `ArchPresets::noLocalCryptoPrimitives()` also bans `hash_hkdf`. crypto-for-laravel 1.2.0 ships
