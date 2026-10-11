@@ -6,6 +6,12 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 
 ## Unreleased
 
+### Changed
+
+- `ArchPresets::noLocalCryptoPrimitives()` also bans `hash_hkdf`. crypto-for-laravel 1.2.0 ships
+  `Crypto::hkdf()`, which takes the algorithm and the length explicitly (a length of `0` throws
+  instead of meaning one hash length). Move a local `hash_hkdf()` call to it.
+
 ## 1.3.0 - 2026-10-11
 
 ### Changed

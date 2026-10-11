@@ -121,6 +121,7 @@ final class ArchPresets
         'hash',
         'hash_hmac',
         'hash_pbkdf2',
+        'hash_hkdf',
         'openssl_encrypt',
         'openssl_decrypt',
         'openssl_sign',

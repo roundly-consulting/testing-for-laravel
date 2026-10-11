@@ -34,6 +34,20 @@ it('bans exactly the openssl primitive a local verifier re-implements', function
         ->toContain('openssl_verify');
 });
 
+it('bans hash_hkdf, which crypto-for-laravel owns since 1.2.0', function () use ($archFixture): void {
+    // `Crypto::hkdf()` takes the algorithm and the length explicitly; a local `hash_hkdf()` call
+    // makes that choice again, and reads a length of 0 as one hash length.
+    $called = [];
+
+    foreach (token_get_all((string) file_get_contents($archFixture('crypto/LocalSubkeys.php'))) as $token) {
+        if (is_array($token) && $token[0] === T_STRING) {
+            $called[] = $token[1];
+        }
+    }
+
+    expect(array_values(array_intersect($called, ArchPresets::CRYPTO_PRIMITIVES)))->toBe(['hash_hkdf']);
+});
+
 it('does not ban hash_equals, which is the correct primitive rather than a copy of one', function (): void {
     // Pinned, with the reasoning in the CRYPTO_PRIMITIVES docblock. `hash_equals()` IS PHP's
     // constant-time compare, so the ban fired on correct code; it carries no algorithm or key
