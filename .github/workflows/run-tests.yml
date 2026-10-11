@@ -46,10 +46,12 @@ jobs:
 
       - name: Install dependencies
         run: |
-          composer require --dev "laravel/framework:${{ matrix.laravel }}" "orchestra/testbench:${{ matrix.testbench }}" --no-interaction --no-update
-          # --with narrows Pest to the leg's major for this resolve only: composer.json keeps
-          # the committed ^4.0|^5.0, which the suite itself pins.
+          composer require --dev "laravel/framework:${{ matrix.laravel }}" --no-interaction --no-update
+          # --with narrows Testbench and Pest to the leg's majors for this resolve only:
+          # composer.json keeps both in `require` (the dev-only carve-out) with their committed
+          # constraints, which the suite itself pins. `require --dev` would move them.
           composer update --${{ matrix.stability }} --prefer-dist --no-interaction \
+            --with "orchestra/testbench:${{ matrix.testbench }}" \
             --with "pestphp/pest:${{ matrix.pest }}" \
             --with "pestphp/pest-plugin-laravel:${{ matrix.pest }}"
 
