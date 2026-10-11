@@ -6,6 +6,14 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 
 ## Unreleased
 
+### Changed
+
+- `ArchPresets::runtimeRequireIsWhitelisted()` fails an `$alsoAllow` entry that forgives
+  nothing: a package that is not in `require` (removed, or only in `require-dev`), or one the
+  policy already allows (`illuminate/*`, `ext-*`, `roundly-consulting/*`, …). A dependency
+  dropped from `require` used to leave its carve-out behind, so the vendor could come back later
+  without anyone arguing for it again. Remove the entries the failure names.
+
 ## 1.2.1 - 2026-10-10
 
 ### Fixed

@@ -412,6 +412,7 @@ final class ArchPresets
 
     /**
      * The runtime dependency policy as a test: `require` holds only whitelisted vendors.
+     * An `$alsoAllow` entry that forgives nothing (not in `require`, or already allowed) fails.
      *
      * @param  list<string>  $alsoAllow
      */

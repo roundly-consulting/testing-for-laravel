@@ -18,6 +18,11 @@ use PHPUnit\Framework\Assert;
  * ships transitively into every consumer; catching it in the package's own suite keeps
  * the policy from rotting between reviews.
  *
+ * An `$alsoAllow` entry that forgives nothing **fails** — one naming a package that is not in
+ * `require` (removed, or only ever in `require-dev`), or one the policy already allows. The
+ * first is the dangerous one: a dependency dropped from `require` leaves its carve-out
+ * behind, and the vendor can come back later without anyone arguing for it again.
+ *
  * This is the assertion behind {@see ArchPresets::runtimeRequireIsWhitelisted()}.
  */
 final class RuntimeRequires
@@ -50,7 +55,7 @@ final class RuntimeRequires
                 continue;
             }
 
-            if (preg_match(self::WHITELIST, $package) !== 1 && preg_match(self::PLATFORM, $package) !== 1) {
+            if (! self::allowedByPolicy($package)) {
                 $disallowed[] = $package;
             }
         }
@@ -66,5 +71,30 @@ final class RuntimeRequires
             .'php-64bit, …), illuminate/*, laravel/*, symfony/*, roundly-consulting/*, or an explicit $alsoAllow '
             .'entry — reimplement natively or move it to require-dev.',
         );
+
+        $stale = [];
+
+        foreach (array_unique($alsoAllow) as $entry) {
+            if (! array_key_exists($entry, $require)) {
+                $stale[$entry] = "{$entry} (not in require)";
+            } elseif (self::allowedByPolicy($entry)) {
+                $stale[$entry] = "{$entry} (already allowed by the policy)";
+            }
+        }
+
+        ksort($stale);
+
+        Assert::assertSame(
+            [],
+            array_values($stale),
+            'These $alsoAllow entries forgive nothing: '.implode(', ', $stale).'. A carve-out for a '
+            .'package that has left `require` lets the vendor come back unreviewed, and one for an '
+            .'allowed package hides nothing. Remove it.',
+        );
+    }
+
+    private static function allowedByPolicy(string $package): bool
+    {
+        return preg_match(self::WHITELIST, $package) === 1 || preg_match(self::PLATFORM, $package) === 1;
     }
 }

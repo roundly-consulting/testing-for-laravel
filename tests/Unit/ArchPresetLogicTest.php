@@ -220,6 +220,46 @@ it('accepts a would-be-disallowed vendor once it is explicitly allowed', functio
     ]);
 });
 
+// A carve-out that forgives nothing must fail, the standard exemptionsExist() and the config
+// contract's allowUnread hold. A dependency removed from `require` would otherwise leave its
+// entry behind, and the vendor could come back later without anyone arguing for it again.
+
+it('rejects an alsoAllow entry for a package no longer in require', function () use ($archFixture): void {
+    expect(fn () => RuntimeRequires::assert($archFixture('composer/whitelisted.json'), ['predis/predis']))
+        ->toThrow(AssertionFailedError::class, 'predis/predis (not in require)');
+});
+
+it('rejects an alsoAllow entry for a package only in require-dev', function () use ($archFixture): void {
+    // require-dev is never policed, so the entry forgives nothing there either.
+    expect(fn () => RuntimeRequires::assert($archFixture('composer/whitelisted.json'), ['some-vendor/dev-only-tool']))
+        ->toThrow(AssertionFailedError::class, 'some-vendor/dev-only-tool (not in require)');
+});
+
+it('rejects an alsoAllow entry the policy already allows', function (string $entry) use ($archFixture): void {
+    expect(fn () => RuntimeRequires::assert($archFixture('composer/whitelisted.json'), [$entry]))
+        ->toThrow(AssertionFailedError::class, "{$entry} (already allowed by the policy)");
+})->with(['illuminate/support', 'ext-json', 'roundly-consulting/enums-for-laravel']);
+
+it('names every stale alsoAllow entry next to the used ones', function () use ($archFixture): void {
+    try {
+        RuntimeRequires::assert($archFixture('composer/disallowed.json'), [
+            'guzzlehttp/guzzle',
+            'predis/predis',
+            'acme/media-library',
+            'illuminate/support',
+        ]);
+    } catch (AssertionFailedError $failure) {
+        expect($failure->getMessage())
+            ->toContain('These $alsoAllow entries forgive nothing: illuminate/support (already allowed by the policy), predis/predis (not in require).')
+            ->not->toContain('guzzlehttp/guzzle')
+            ->not->toContain('acme/media-library');
+
+        return;
+    }
+
+    $this->fail('A stale alsoAllow entry passed.');
+});
+
 // ---------------------------------------------------------------------------
 // exemptionsExist — an arch exemption that silences nothing must fail, the same
 // standard the config contract holds allowUnread/allowUnshipped to.
