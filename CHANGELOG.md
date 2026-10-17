@@ -6,6 +6,19 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 
 ## Unreleased
 
+### Changed
+
+- `ArchPresets::modelsResolveThroughSeam()` also fails two bypasses outside `$seamDir`: a relation
+  that names a swappable model by its packaged class (`belongsTo(Comment::class)`, a through
+  model, `self::class` inside the model), and a static call that starts a query on it
+  (`Comment::query()`, `Comment::where()`, `Comment::withTrashed()`, a local scope, …). Both
+  relate or query the packaged class, so a host's swapped model is ignored. The swappable models
+  are read from the package's own seam: every Eloquent model that a static, parameterless method
+  returning `string` under `$seamDir` names beside a config key
+  (`ModelResolver::for('comments.model', Comment::class)`). Each declared `$modelKeys` entry must
+  be read that way, or the case fails. `instanceof Comment` and `is_a(…, Comment::class)` stay
+  allowed, and docblocks and strings do not count.
+
 ## 1.4.0 - 2026-10-11
 
 ### Changed

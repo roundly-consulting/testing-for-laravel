@@ -5,21 +5,17 @@ declare(strict_types=1);
 namespace RoundlyConsulting\Testing\Arch;
 
 use FilesystemIterator;
-use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Query\Builder as QueryBuilder;
 use PHPUnit\Framework\Assert;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
-use ReflectionClass;
-use ReflectionMethod;
 use SplFileInfo;
 
 /**
  * The permissions #34 pin, generalized: a package with a config-swappable model must
  * resolve that model **through its seam** and nowhere else.
  *
- * Two ways the seam gets bypassed, both caught here from source tokens:
+ * Four ways the seam gets bypassed, all caught here from source tokens:
  *
  *   1. `static::query()` / `self::query()` / `new static` **inside an Eloquent model**.
  *      Late static binding resolves to the class the code *named*, not the one the host
@@ -48,6 +44,51 @@ use SplFileInfo;
  *   2. the `'<pkg>.<model-key>'` config literal appearing in a file outside the seam
  *      directory. Only the seam may read the swap key; a stray literal anywhere else is
  *      a second, competing resolution path that will drift from the seam.
+ *
+ *   3. a **relation** outside the seam directory naming a swappable model by its packaged
+ *      class — `belongsTo(Comment::class)`, `$this->morphMany(Comment::class, 'commentable')`,
+ *      a through model, a named `related:` argument, or `self::class` inside the swappable
+ *      model itself. The relation returns the packaged class, never the host's subclass: comments
+ *      1.1.0 shipped `CommentMention::comment()` exactly so, under a green preset. Covered:
+ *      `belongsTo`, `hasOne`, `hasMany`, `belongsToMany`, `morphOne`, `morphMany`, `morphToMany`,
+ *      `morphedByMany`, `hasOneThrough`, `hasManyThrough` ({@see SeamBypasses::RELATIONS}).
+ *
+ *   4. a **static Eloquent entry point** on a swappable model's packaged class outside the seam
+ *      directory — `Comment::query()`, `Comment::where()`, `Comment::find()`, `Comment::create()`,
+ *      `Comment::withTrashed()`, a local scope, … Model's `__callStatic` turns any method the
+ *      class does not declare into a query on **that** class, so the host's table, scopes and
+ *      events are skipped ({@see QueryForwarding}). comments 1.1.0's `AssertsComments` queried
+ *      `Comment::query()` and asserted against the wrong table. A static the model declares
+ *      itself (`Comment::creating()`, `observe()`, its own helper) builds no query and passes.
+ *
+ *   Halves 3 and 4 are scoped to the seam on purpose: inside `$seamDir` naming the packaged
+ *   class is how the seam supplies the default. `Comment::class` on its own — `instanceof`,
+ *   `is_a()`, a morph map — is no bypass either: the configured class is always `Comment` or a
+ *   subclass of it, so a check against the base is correct.
+ *
+ * ## Which models are swappable — read from the package's own seam
+ *
+ * Halves 3 and 4 need to know which classes are swappable, and that comes from the package,
+ * never from a guess: every Eloquent model a static, parameterless, string-returning method
+ * under `$seamDir` names by `X::class` beside a config-key literal — the default and the swap
+ * key side by side, the shape of every seam in the fleet (`CommentModel::class()`,
+ * `ApprovalModelResolver::class()`, `TicketModels::ticket()`, `SluggableConfig::historyModel()`).
+ * See {@see SeamModels} for the rule and what it measured: on 2026-10-17 it found exactly the
+ * models each of the 31 adopting packages maps in its own `swappableModelsAreNotFinal()`.
+ *
+ * It does not read the config value (that needs a booted app, see below) and it does not trust a
+ * class name convention (`*Model`, `*ModelResolver`): auth's `Models` and tickets'
+ * `TicketModels` resolve several models each, and a name rule would cover some seams and skip
+ * the rest without saying so.
+ *
+ * **Non-vacuous where a declaration says it must be:** every declared `$modelKeys` entry read in
+ * the seam must be read by a seam method beside the default model it resolves, or the case
+ * fails — a declared key whose model cannot be known would leave halves 3 and 4 blind to it.
+ * Undeclared keys are not held to this: key-shape inference also matches keys that swap nothing
+ * the package ships (lifecycle reads `auth.providers.users.model` in its seam; sentinel's
+ * `sentinel.models` is not a swap at all), and failing on those would be the unappealable false
+ * positive this `it()` case cannot afford. A package with no swappable model (cosmos-logging)
+ * has nothing for halves 3 and 4 to guard and passes them; halves 1 and 2 still run.
  *
  * ## Declare your swap keys — key *shape* is a floor, not a guarantee
  *
@@ -106,17 +147,6 @@ final class ModelSeam
     private const MODEL_KEY = '/^[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+$/';
 
     /**
-     * Model's own static entry points that build a query on the named class — declared on
-     * Model, so not forwarded, but the same bypass as `query()`. Lowercased.
-     *
-     * @var list<string>
-     */
-    private const array QUERY_ENTRY_POINTS = ['query', 'all', 'with', 'on', 'onwriteconnection', 'destroy'];
-
-    /** @var list<string>|null lowercased public methods of the Eloquent and query builders */
-    private static ?array $builderMethods = null;
-
-    /**
      * @param  list<string>  $modelKeys  the swap keys to police; declared beats inferred
      */
     public static function assert(string $srcDir, string $seamDir = 'Support', array $modelKeys = []): void
@@ -137,6 +167,7 @@ final class ModelSeam
         $parents = self::parentChain($tokenized);
 
         $declaredSeen = [];
+        $seamKeys = [];
 
         foreach ($tokenized as $file => $tokens) {
             if (self::isModel($tokens, $parents) && self::usesLateStaticResolution($tokens, self::declaredClass($tokens))) {
@@ -158,6 +189,8 @@ final class ModelSeam
 
                 if (! self::isInSeam($srcDir, $file, $seamDir)) {
                     $strayLiterals[] = self::relative($srcDir, $file).": '{$literal}'";
+                } else {
+                    $seamKeys[$literal] = self::relative($srcDir, $file);
                 }
             }
         }
@@ -182,6 +215,61 @@ final class ModelSeam
             "These files read a swappable-model config literal outside the '{$seamDir}' seam, creating a "
             .'competing resolution path: '.implode(', ', $strayLiterals)
             .". Read the key only through the {$seamDir} seam.",
+        );
+
+        self::assertNoPackagedClassBypass($srcDir, $seamDir, $seamKeys, $modelKeys);
+    }
+
+    /**
+     * Halves 3 and 4: outside the seam, nothing names a swappable model's packaged class to
+     * relate or query it — and the set of swappable models is the package's own, never empty
+     * by accident. See the class docblock.
+     *
+     * @param  array<string, string>  $seamKeys  swap key read in the seam => the file reading it
+     * @param  list<string>  $modelKeys  the declared swap keys
+     */
+    private static function assertNoPackagedClassBypass(string $srcDir, string $seamDir, array $seamKeys, array $modelKeys): void
+    {
+        $sources = PhpSource::allIn($srcDir);
+        $models = SeamModels::discover($sources, $srcDir, $seamDir);
+
+        $unresolved = [];
+
+        foreach ($modelKeys as $key) {
+            if (isset($seamKeys[$key]) && ! $models->readsKey($key)) {
+                $unresolved[] = "{$seamKeys[$key]}: '{$key}'";
+            }
+        }
+
+        sort($unresolved);
+
+        Assert::assertSame(
+            [],
+            $unresolved,
+            "These declared swap keys are read in the '{$seamDir}' seam, but by no seam method that names the "
+            .'default model beside them, so the models they swap cannot be known and nothing guards them: '
+            .implode(', ', $unresolved).'. Resolve each key in a static, parameterless method returning '
+            ."string that names both the key and the default, e.g. ModelResolver::for('<pkg>.model', Model::class).",
+        );
+
+        $relations = SeamBypasses::literalRelations($sources, $srcDir, $seamDir, $models);
+
+        Assert::assertSame(
+            [],
+            $relations,
+            "These relations name a swappable model by its packaged class outside the '{$seamDir}' seam, so a "
+            ."host's swapped subclass is never what they return:\n  - ".implode("\n  - ", $relations)
+            ."\nPass the configured class-string from the seam instead (belongsTo(CommentModel::class())).",
+        );
+
+        $statics = SeamBypasses::staticEntryPoints($sources, $srcDir, $seamDir, $models);
+
+        Assert::assertSame(
+            [],
+            $statics,
+            "These static calls start a query on a swappable model's packaged class outside the '{$seamDir}' "
+            ."seam, so a host's swapped subclass is never queried:\n  - ".implode("\n  - ", $statics)
+            ."\nQuery the configured class-string from the seam instead (CommentModel::class()::query()).",
         );
     }
 
@@ -512,7 +600,7 @@ final class ModelSeam
     {
         $method = strtolower($method);
 
-        if (in_array($method, self::QUERY_ENTRY_POINTS, true)) {
+        if (in_array($method, QueryForwarding::QUERY_ENTRY_POINTS, true)) {
             return true;
         }
 
@@ -525,29 +613,7 @@ final class ModelSeam
             return false;
         }
 
-        return in_array($method, self::builderMethods(), true);
-    }
-
-    /**
-     * @return list<string>
-     */
-    private static function builderMethods(): array
-    {
-        if (self::$builderMethods === null) {
-            $methods = [];
-
-            foreach ([EloquentBuilder::class, QueryBuilder::class] as $builder) {
-                foreach ((new ReflectionClass($builder))->getMethods(ReflectionMethod::IS_PUBLIC) as $method) {
-                    if (! str_starts_with($method->getName(), '__')) {
-                        $methods[] = strtolower($method->getName());
-                    }
-                }
-            }
-
-            self::$builderMethods = array_values(array_unique($methods));
-        }
-
-        return self::$builderMethods;
+        return in_array($method, QueryForwarding::builderMethods(), true);
     }
 
     /**

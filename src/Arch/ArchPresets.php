@@ -341,8 +341,14 @@ final class ArchPresets
 
     /**
      * Models resolve their (possibly host-swapped) class only through the seam: no
-     * `static::query()` / `self::query()` / `new static`, and the swap config literal
-     * appears only inside `$seamDir`.
+     * `static::query()` / `self::query()` / `new static`, the swap config literal appears only
+     * inside `$seamDir`, and outside it nothing names a swappable model's packaged class to
+     * relate or query it — no `belongsTo(Comment::class)`, no `Comment::query()` /
+     * `Comment::where()` / `Comment::withTrashed()`. The swappable models are read from the
+     * package's own seam: every model a static, parameterless, string-returning method under
+     * `$seamDir` names beside a config key (`ModelResolver::for('comments.model',
+     * Comment::class)`). `instanceof Comment` and `is_a(..., Comment::class)` stay allowed.
+     * Every declared key must be read that way, so its model is known. See {@see ModelSeam}.
      *
      * **Declare `$modelKeys` unless every swap key you own is `model` / `models` / `*_model`
      * shaped.** Left empty, the stray-literal half infers swap keys from key *shape*, and so
