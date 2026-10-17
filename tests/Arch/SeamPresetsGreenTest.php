@@ -14,3 +14,5 @@ ArchPresets::modelsResolveThroughSeam($archFixture('SeamBypass/Green'), 'Support
     'arch.gadget_model',
     'arch.sprocket_model',
 ]);
+
+ArchPresets::factoriesResolveThroughSeam($archFixture('FactorySeam/Green'), $archFixture('FactorySeam/Src'));

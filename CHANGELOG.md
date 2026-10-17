@@ -6,6 +6,17 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 
 ## Unreleased
 
+### Added
+
+- `ArchPresets::factoriesResolveThroughSeam($factoriesDir, $srcDir, $seamDir = 'Support')`: every
+  factory under `$factoriesDir` whose model is swappable must override `modelName()` to return that
+  model's seam (`return LikeModel::class();`). Without the override, `Like::factory()` builds the
+  packaged class after a host swapped it, on the packaged table and without the host's casts,
+  scopes or events. The swappable models are read from the package's seam, as below. The case fails
+  on a missing directory, a seam with no swappable model, a directory with no factory class,
+  factories none of which builds a swappable model, and a factory whose model it cannot read.
+  Opt-in: adopt it together with the overrides.
+
 ### Changed
 
 - `ArchPresets::modelsResolveThroughSeam()` also fails two bypasses outside `$seamDir`: a relation

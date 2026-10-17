@@ -376,6 +376,39 @@ final class ArchPresets
     }
 
     /**
+     * Every factory of a swappable model builds the model the host configured: it overrides
+     * `modelName()` to return the model's seam, the likes/posts/reviews pattern —
+     *
+     * ```php
+     * protected $model = Like::class;
+     *
+     * public function modelName(): string
+     * {
+     *     return LikeModel::class();
+     * }
+     * ```
+     *
+     * Without it, `Like::factory()` creates the packaged class even after a host swapped it, on
+     * the packaged table, without the host's casts, scopes or events. The swappable models are
+     * read from `$srcDir`'s seam exactly as {@see self::modelsResolveThroughSeam()} reads them.
+     *
+     * **Opt-in, never auto-adopted:** adopt it on a package whose factories build a swappable
+     * model, together with the override. **Non-vacuous:** a missing directory, a seam that names
+     * no swappable model, a directory with no factory class and factories none of which builds a
+     * swappable model all fail. See {@see FactorySeam}.
+     *
+     * ```php
+     * ArchPresets::factoriesResolveThroughSeam(__DIR__.'/../database/factories', __DIR__.'/../src');
+     * ```
+     */
+    public static function factoriesResolveThroughSeam(string $factoriesDir, string $srcDir, string $seamDir = 'Support'): mixed
+    {
+        return it("preset: factories build swappable models through the {$seamDir} seam", function () use ($factoriesDir, $srcDir, $seamDir): void {
+            FactorySeam::assert($factoriesDir, $srcDir, $seamDir);
+        });
+    }
+
+    /**
      * Every morph column in `$migrationsDir` goes through the toolkit's `morphKey()` seam —
      * no raw `$table->morphs()` / `nullableMorphs()` / `numeric`|`uuid`|`ulid` variant, which hardcode
      * the id key type and break uuid/ulid hosts on a strict engine (SQLite type affinity hides
