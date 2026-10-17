@@ -34,6 +34,8 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
   time (tickets-for-laravel: 83 s to 60 s, no opt-in needed). A migrator a test adds itself
   (`loadMigrationsFrom()`, `loadLaravelMigrations()`) still rolls back, and a `RefreshDatabase`
   suite is untouched.
+- Maintenance: the pgsql CI leg runs Postgres on tmpfs with durability off, and fails if the suite
+  leaves a table behind.
 
 ## 1.5.0 - 2026-10-17
 
