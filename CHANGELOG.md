@@ -6,6 +6,15 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 
 ## Unreleased
 
+### Changed
+
+- On in-memory SQLite the teardown no longer runs Testbench's `migrate:rollback` for each
+  `migrationSources()` entry. With no `down()` to call, it only deleted the migrations rows of a
+  database that vanishes with its connection anyway. That was about a fifth of a SQLite suite's
+  time (tickets-for-laravel: 83 s to 60 s, no opt-in needed). A migrator a test adds itself
+  (`loadMigrationsFrom()`, `loadLaravelMigrations()`) still rolls back, and a `RefreshDatabase`
+  suite is untouched.
+
 ## 1.5.0 - 2026-10-17
 
 ### Added

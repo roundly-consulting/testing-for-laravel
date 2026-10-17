@@ -9,6 +9,7 @@ use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Database\DatabaseManager;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\ServiceProvider;
+use Orchestra\Testbench\Database\MigrateProcessor;
 use Orchestra\Testbench\TestCase as Orchestra;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationRunner;
 use RoundlyConsulting\Testing\Concerns\LoadsProviderMigrations;
@@ -44,6 +45,14 @@ abstract class PackageTestCase extends Orchestra
 {
     use LoadsProviderMigrations;
     use SwapsConfiguredModels;
+
+    /**
+     * The migrators {@see self::migrationSources()} added, so the in-memory teardown can skip
+     * exactly their rollback and no other.
+     *
+     * @var list<MigrateProcessor>
+     */
+    private array $sourceMigrators = [];
 
     /**
      * The package service providers under test, in the order they should register.
@@ -104,7 +113,19 @@ abstract class PackageTestCase extends Orchestra
 
     protected function defineDatabaseMigrations(): void
     {
+        $this->runMigrationSources();
+    }
+
+    private function runMigrationSources(): void
+    {
+        $before = count($this->cachedTestMigratorProcessors);
+
         $this->loadMigrationSources($this->migrationSources());
+
+        // loadMigrationsFrom() unshifts, so the migrators just added come first.
+        $added = array_slice($this->cachedTestMigratorProcessors, 0, count($this->cachedTestMigratorProcessors) - $before);
+
+        $this->sourceMigrators = [...$this->sourceMigrators, ...$added];
     }
 
     /**
@@ -153,14 +174,27 @@ abstract class PackageTestCase extends Orchestra
      * (`RefreshDatabase` rolls back and disconnects its transacted connections itself). Having
      * no migrations is not a reason to skip the reset; owning a competing one is.
      *
+     * ## In-memory SQLite skips the sources' rollback
+     *
+     * On `:memory:` the database dies with the connection, so the reset is free — but Testbench
+     * still ran a `migrate:rollback` per source on it: no `down()` to call, only the migrations
+     * rows to delete from a database about to vanish. That was ~21 % of a SQLite worker's time
+     * in tickets-for-laravel. The migrators {@see self::migrationSources()} added are dropped
+     * from the cache first, so it no longer runs. Nothing else changes: a migrator a test added
+     * itself (`loadMigrationsFrom()`, `loadLaravelMigrations()`) still rolls back, and a
+     * `RefreshDatabase` suite keeps Testbench's path untouched — its schema outlives the test.
+     *
      * @internal Overrides Testbench's teardown hook, dispatched by trait basename.
      */
     protected function tearDownInteractsWithMigrations(): void
     {
-        // In-memory SQLite needs nothing: the database dies with the connection. Leave that
-        // path exactly as Testbench wrote it — and never purge, because a `:memory:` suite
-        // using RefreshDatabase keeps its schema *in* the connection.
+        // In-memory SQLite needs no reset: the database dies with the connection. Never purge,
+        // because a `:memory:` suite using RefreshDatabase keeps its schema *in* the connection.
         if ($this->usesSqliteInMemoryDatabaseConnection()) {
+            if (! static::usesRefreshDatabaseTestingConcern()) {
+                $this->forgetSourceMigrators();
+            }
+
             parent::tearDownInteractsWithMigrations();
 
             return;
@@ -186,6 +220,21 @@ abstract class PackageTestCase extends Orchestra
 
         $this->dropAllTablesForReset();
         $this->purgeConnections();
+    }
+
+    /**
+     * Drop the migrators {@see self::migrationSources()} added from Testbench's rollback list.
+     */
+    private function forgetSourceMigrators(): void
+    {
+        $sources = $this->sourceMigrators;
+
+        $this->cachedTestMigratorProcessors = array_values(array_filter(
+            $this->cachedTestMigratorProcessors,
+            static fn (MigrateProcessor $migrator): bool => ! in_array($migrator, $sources, true),
+        ));
+
+        $this->sourceMigrators = [];
     }
 
     /**
