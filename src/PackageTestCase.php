@@ -6,6 +6,7 @@ namespace RoundlyConsulting\Testing;
 
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Database\Connection;
 use Illuminate\Database\DatabaseManager;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\ServiceProvider;
@@ -15,6 +16,9 @@ use RoundlyConsulting\Testing\Assertions\Migrations\MigrationRunner;
 use RoundlyConsulting\Testing\Concerns\LoadsProviderMigrations;
 use RoundlyConsulting\Testing\Concerns\SwapsConfiguredModels;
 use RoundlyConsulting\Testing\Database\DriverMatrix;
+use RoundlyConsulting\Testing\Database\KeptSchema;
+use RoundlyConsulting\Testing\Database\SchemaCatalogue;
+use RoundlyConsulting\Testing\Database\SchemaSignature;
 
 /**
  * Base Testbench test case for a roundly `*-for-laravel` package suite — the one
@@ -45,6 +49,12 @@ abstract class PackageTestCase extends Orchestra
 {
     use LoadsProviderMigrations;
     use SwapsConfiguredModels;
+
+    /**
+     * The schema this test runs on when it keeps it — null when it migrates and drops like any
+     * other test.
+     */
+    private ?KeptSchema $keptSchema = null;
 
     /**
      * The migrators {@see self::migrationSources()} added, so the in-memory teardown can skip
@@ -87,6 +97,52 @@ abstract class PackageTestCase extends Orchestra
     }
 
     /**
+     * Opt in to migrating **once per worker** and resetting only the data between tests.
+     *
+     * By default every test migrates every source and drops every table afterwards. With many
+     * sources, or on a real engine, that is most of the suite's time: tickets-for-laravel ran
+     * 1047 migrates over 9 sources, ~90 % of its MySQL leg. Kept, a worker migrates once per
+     * schema signature (the connection, the migration sources, the providers, the whole config
+     * and {@see self::schemaSignatureExtras()}) — 12 migrates for the same suite — and after each
+     * test empties the tables it wrote and puts every key counter back where the migrate left it.
+     *
+     * Each test still starts where a fresh migrate leaves it:
+     *
+     *  - no wrapping transaction, so the transaction level a test sees is its own and a forked
+     *    racer sees the parent's committed rows across real connections;
+     *  - empty tables, counters as migrated: the next insert gets the id a fresh migrate gives;
+     *  - a test that changed the schema — a column, an index, a dropped table, a migrations row,
+     *    SQLite's foreign keys left off — is caught by a catalogue check after it, and the next
+     *    test migrates from scratch (what the check covers: {@see SchemaCatalogue});
+     *  - migrations that write rows are detected after the first migrate: that schema keeps the
+     *    drop-per-test reset, so no test loses the rows its migrations seeded;
+     *  - when the worker exits it drops its tables, as the drop-per-test reset left them.
+     *
+     * Supported on MySQL, MariaDB, PostgreSQL and in-memory SQLite; anything else (and a suite
+     * using `RefreshDatabase`) keeps the drop-per-test reset. A forked child — a racer on a real
+     * engine — must end with SIGKILL, never `exit()`: it shares the parent's database sessions,
+     * the kept schema's included, and a normal exit closes them.
+     */
+    protected function keepsMigratedSchema(): bool
+    {
+        return false;
+    }
+
+    /**
+     * Whatever else your migrations read, for a test case that keeps its schema: the signature
+     * already holds the connection, the migration sources, the providers, the config (objects by
+     * class) and the schema builder's static defaults. Return what it cannot see — an env var, a
+     * static flag set in `defineEnvironment()` — so a test that would migrate differently never
+     * reuses another's schema.
+     *
+     * @return array<array-key, mixed>
+     */
+    protected function schemaSignatureExtras(): array
+    {
+        return [];
+    }
+
+    /**
      * @param  Application  $app
      * @return list<class-string<ServiceProvider>>
      */
@@ -111,9 +167,36 @@ abstract class PackageTestCase extends Orchestra
         $this->applyConfiguredModelSwaps($app);
     }
 
+    /**
+     * Migrate the sources — or, for a test case that {@see self::keepsMigratedSchema() keeps its
+     * schema}, hand the test the worker's kept one. Override it only to add to it, calling
+     * `parent::defineDatabaseMigrations()` first; anything migrated after it shows up as a schema
+     * change, so a kept schema then migrates afresh for every test (correct, just not faster).
+     */
     protected function defineDatabaseMigrations(): void
     {
-        $this->runMigrationSources();
+        if ($this->keptSchema !== null) {
+            // A second migrate in one test means "migrate now", from an empty database.
+            $this->keptSchema = null;
+            KeptSchema::discard();
+            $this->purgeConnections();
+        }
+
+        $connection = $this->connectionKeepingItsSchema();
+
+        if ($connection === null) {
+            KeptSchema::release();
+            $this->runMigrationSources();
+
+            return;
+        }
+
+        $this->keptSchema = KeptSchema::keep(
+            $connection,
+            $this->schemaSignature($connection),
+            $this->migrationsTable(),
+            $this->runMigrationSources(...),
+        );
     }
 
     private function runMigrationSources(): void
@@ -128,9 +211,46 @@ abstract class PackageTestCase extends Orchestra
         $this->sourceMigrators = [...$this->sourceMigrators, ...$added];
     }
 
+    private function connectionKeepingItsSchema(): ?Connection
+    {
+        if (! $this->keepsMigratedSchema() || static::usesRefreshDatabaseTestingConcern()) {
+            return null;
+        }
+
+        $manager = $this->app?->make('db');
+        $connection = $manager instanceof DatabaseManager ? $manager->connection() : null;
+
+        return $connection instanceof Connection && KeptSchema::supports($connection) ? $connection : null;
+    }
+
+    private function schemaSignature(Connection $connection): string
+    {
+        $config = $this->app?->make(Repository::class);
+
+        return SchemaSignature::of(
+            $connection,
+            array_map(static fn (string $source): string => self::migrationDirectoryFor($source), $this->migrationSources()),
+            array_map(strval(...), array_keys($this->app?->getLoadedProviders() ?? [])),
+            $config?->all() ?? [],
+            $this->schemaSignatureExtras(),
+        );
+    }
+
+    private function migrationsTable(): string
+    {
+        $table = $this->app?->make(Repository::class)->get('database.migrations');
+
+        if (is_array($table)) {
+            $table = $table['table'] ?? null;
+        }
+
+        return is_string($table) && $table !== '' ? $table : 'migrations';
+    }
+
     /**
      * Reset the schema between tests by **dropping every table**, not by rolling the
-     * migrations back.
+     * migrations back — or, for a test case that {@see self::keepsMigratedSchema() keeps its
+     * schema}, by emptying the tables and rewinding the key counters.
      *
      * Testbench's own teardown unwinds each migrator it cached in
      * {@see Orchestra\Testbench\Concerns\InteractsWithMigrations::loadMigrationsFrom()}
@@ -188,6 +308,12 @@ abstract class PackageTestCase extends Orchestra
      */
     protected function tearDownInteractsWithMigrations(): void
     {
+        if ($this->keptSchema !== null) {
+            $this->tearDownKeptSchema($this->keptSchema);
+
+            return;
+        }
+
         // In-memory SQLite needs no reset: the database dies with the connection. Never purge,
         // because a `:memory:` suite using RefreshDatabase keeps its schema *in* the connection.
         if ($this->usesSqliteInMemoryDatabaseConnection()) {
@@ -235,6 +361,28 @@ abstract class PackageTestCase extends Orchestra
         ));
 
         $this->sourceMigrators = [];
+    }
+
+    /**
+     * The kept schema stays: nothing is rolled back (no roundly migration ships a `down()`),
+     * the test's sessions close, and the schema is reset — or thrown away when the test changed
+     * it, so the next test migrates from scratch.
+     */
+    private function tearDownKeptSchema(KeptSchema $schema): void
+    {
+        $this->keptSchema = null;
+        $this->sourceMigrators = [];
+
+        // A migrator the test ran on top of the sources must not roll back on the kept schema:
+        // its tables and rows are a schema change, and the settle below discards the schema.
+        $this->cachedTestMigratorProcessors = [];
+
+        parent::tearDownInteractsWithMigrations();
+
+        // Close the test's sessions first: an open transaction rolls back, its locks go.
+        $this->purgeConnections();
+
+        $schema->settle();
     }
 
     /**

@@ -6,6 +6,26 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 
 ## Unreleased
 
+### Added
+
+- `PackageTestCase::keepsMigratedSchema()`: return `true` and a worker migrates once per schema
+  signature instead of before every test, then resets only the data between tests. After each test
+  it empties the tables the test wrote and puts every key counter (MySQL `AUTO_INCREMENT`, Postgres
+  sequences, SQLite `sqlite_sequence`) back where the migrate left it. There is still no wrapping
+  transaction, so `transactionDepth` and forked racers behave as before. A catalogue check after
+  every test (columns, indexes, constraints, views, triggers, the migrations table, SQLite's
+  foreign-key switch) catches a test that changed the schema, and the next test migrates from
+  scratch. Migrations that write rows are detected after the first migrate, and that schema keeps
+  the drop-per-test reset. The worker drops its tables when it exits. Supported on MySQL, MariaDB,
+  PostgreSQL and in-memory SQLite; anything else keeps the drop-per-test reset. Off by default.
+  tickets-for-laravel (9 migration sources), where the harness started, went from 1061 migrates per
+  run to 37 and its CI MySQL leg from 32 minutes to under 2. A forked child must end with SIGKILL,
+  never `exit()`: a normal exit closes the database sessions it shares with the parent.
+- `PackageTestCase::schemaSignatureExtras()`: whatever else your migrations read that the
+  signature cannot see (an env var, a static flag), so a test that would migrate differently never
+  reuses another test's schema. The signature already covers the connection, the migration sources,
+  the loaded providers, the whole config and the schema builder's static defaults.
+
 ### Changed
 
 - On in-memory SQLite the teardown no longer runs Testbench's `migrate:rollback` for each

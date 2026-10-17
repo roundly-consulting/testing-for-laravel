@@ -9,13 +9,18 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use RoundlyConsulting\Testing\Database\DriverMatrix;
 
 /**
- * `RefreshDatabase` on an in-memory SQLite database, on every leg. It owns the reset, so the
- * teardown must leave it to Testbench. Pinned to SQLite because `RefreshDatabase` never drops
+ * `RefreshDatabase` on an in-memory SQLite database, on every leg, opting in to a kept schema it
+ * must not get: it owns the reset, so the teardown must leave it to Testbench. Pinned to SQLite because `RefreshDatabase` never drops
  * what it migrated: on a real engine its tables would outlive the suite's other tests.
  */
 class InMemoryRefreshDatabaseTestCase extends FakePackageTestCase
 {
     use RefreshDatabase;
+
+    protected function keepsMigratedSchema(): bool
+    {
+        return true;
+    }
 
     /**
      * @param  Application  $app

@@ -11,10 +11,10 @@ use RoundlyConsulting\Testing\Tests\Support\InMemoryRefreshDatabaseTestCase;
 uses(InMemoryRefreshDatabaseTestCase::class);
 
 /**
- * `RefreshDatabase` owns the reset, so the skipped in-memory rollback does not apply to it:
- * Testbench's own teardown runs exactly as Testbench wrote it.
+ * `RefreshDatabase` owns the reset, so neither the kept schema nor the skipped in-memory rollback
+ * applies to it: Testbench's own teardown runs exactly as Testbench wrote it.
  */
-it('leaves an in-memory RefreshDatabase suite to Testbench', function (): void {
+it('leaves an in-memory RefreshDatabase suite to Testbench, opt-in or not', function (): void {
     expect(Schema::hasTable('fake_widgets'))->toBeTrue()
         ->and(DB::connection()->transactionLevel())->toBe(1);
 
