@@ -6,6 +6,8 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 
 ## Unreleased
 
+## 1.5.0 - 2026-10-17
+
 ### Added
 
 - `ArchPresets::factoriesResolveThroughSeam($factoriesDir, $srcDir, $seamDir = 'Support')`: every
