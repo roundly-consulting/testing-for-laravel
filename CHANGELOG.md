@@ -6,6 +6,8 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 
 ## Unreleased
 
+## 1.6.0 - 2026-10-17
+
 ### Added
 
 - `PackageTestCase::keepsMigratedSchema()`: return `true` and a worker migrates once per schema
