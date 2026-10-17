@@ -6,6 +6,8 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 
 ## Unreleased
 
+## 1.6.1 - 2026-10-17
+
 ### Fixed
 
 - `PackageTestCase::keepsMigratedSchema()` no longer fails every database test with
