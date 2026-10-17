@@ -6,6 +6,14 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 
 ## Unreleased
 
+### Fixed
+
+- `PackageTestCase::keepsMigratedSchema()` no longer fails every database test with
+  `no such table: migrations` in a test case whose `migrationSources()` is empty. Nothing is
+  migrated there, so nothing is kept: the test case stays on the drop-per-test reset, and a fixture
+  table a test builds by hand is still gone before the next test, on every engine. The schema
+  snapshot also keeps nothing when no migrations table exists after migrating.
+
 ## 1.6.0 - 2026-10-17
 
 ### Added

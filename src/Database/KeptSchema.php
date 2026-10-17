@@ -32,8 +32,8 @@ final class KeptSchema
 {
     private static ?self $kept = null;
 
-    /** @var array<string, true> signatures whose migrations write rows: never kept */
-    private static array $seeding = [];
+    /** @var array<string, true> signatures never kept: their migrations write rows, or left no migrations table */
+    private static array $unkept = [];
 
     private static ?int $owner = null;
 
@@ -80,8 +80,9 @@ final class KeptSchema
      * Hand the test the kept schema for its signature, or migrate and keep a new one.
      *
      * Null — nothing kept — when the migrations wrote rows: wiping them between tests would hand
-     * every later test an emptier database than a fresh migrate does, so that signature keeps the
-     * drop-per-test reset for the rest of the run.
+     * every later test an emptier database than a fresh migrate does. Null, too, when they left no
+     * migrations table: nothing was migrated, so there is no schema to keep. Either way that
+     * signature keeps the drop-per-test reset for the rest of the run.
      *
      * @param  Closure(): void  $migrate  runs the test's migrations on `$connection`
      */
@@ -104,14 +105,14 @@ final class KeptSchema
 
         $migrate();
 
-        if (isset(self::$seeding[$signature])) {
+        if (isset(self::$unkept[$signature])) {
             return null;
         }
 
         $schema = self::capture($connection, $signature, $migrationsTable);
 
         if ($schema === null) {
-            self::$seeding[$signature] = true;
+            self::$unkept[$signature] = true;
 
             return null;
         }
@@ -134,21 +135,29 @@ final class KeptSchema
     }
 
     /**
-     * Record the schema the migrations just built on `$connection`: null when they wrote rows.
+     * Record the schema the migrations just built on `$connection`: null when they wrote rows, or
+     * when there is no migrations table — nothing was migrated, and the catalogue reads that table.
      */
     public static function capture(Connection $connection, string $signature, string $migrationsTable): ?self
     {
         $schema = $connection->getSchemaBuilder();
         $tables = [];
+        $migrated = false;
 
         // The connection's own schema only: on MySQL a bare listing spans every database on the
         // server — the other workers' and the probes' included.
         foreach ($schema->getTables($schema->getCurrentSchemaName()) as $table) {
             $name = (string) $table['name'];
 
-            if ($name !== $migrationsTable && ! str_starts_with($name, 'sqlite_')) {
+            if ($name === $migrationsTable) {
+                $migrated = true;
+            } elseif (! str_starts_with($name, 'sqlite_')) {
                 $tables[] = $name;
             }
+        }
+
+        if (! $migrated) {
+            return null;
         }
 
         sort($tables);

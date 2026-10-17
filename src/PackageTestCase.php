@@ -116,6 +116,8 @@ abstract class PackageTestCase extends Orchestra
      *    test migrates from scratch (what the check covers: {@see SchemaCatalogue});
      *  - migrations that write rows are detected after the first migrate: that schema keeps the
      *    drop-per-test reset, so no test loses the rows its migrations seeded;
+     *  - a test case with no {@see self::migrationSources()} has nothing to keep: it keeps the
+     *    drop-per-test reset, so a fixture table a test builds by hand is gone before the next;
      *  - when the worker exits it drops its tables, as the drop-per-test reset left them.
      *
      * Supported on MySQL, MariaDB, PostgreSQL and in-memory SQLite; anything else (and a suite
@@ -213,7 +215,9 @@ abstract class PackageTestCase extends Orchestra
 
     private function connectionKeepingItsSchema(): ?Connection
     {
-        if (! $this->keepsMigratedSchema() || static::usesRefreshDatabaseTestingConcern()) {
+        // No sources, nothing migrated: there is no schema to keep, and the drop reset clears
+        // whatever a test builds by hand.
+        if (! $this->keepsMigratedSchema() || $this->migrationSources() === [] || static::usesRefreshDatabaseTestingConcern()) {
             return null;
         }
 
