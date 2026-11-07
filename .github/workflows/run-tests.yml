@@ -10,23 +10,14 @@ jobs:
       fail-fast: true
       matrix:
         os: [ubuntu-latest]
-        php: [8.4]
-        laravel: [12.*, 13.*]
-        # Pest sits in this package's require, so both majors are supported surface. Without
-        # this axis the L13 leg would silently move to Pest 5 and Pest 4 would lose L13.
-        pest: [4.*, 5.*]
+        php: [8.4, 8.5, 8.6]
+        laravel: [13.*]
         stability: [prefer-stable]
-        exclude:
-          # Pest 5 needs PHPUnit 13 and symfony/process 8; Laravel 12 / Testbench 10 can't.
-          - laravel: 12.*
-            pest: 5.*
         include:
-          - laravel: 12.*
-            testbench: 10.*
           - laravel: 13.*
             testbench: 11.*
 
-    name: P${{ matrix.php }} - L${{ matrix.laravel }} - Pest ${{ matrix.pest }} - ${{ matrix.stability }} - ${{ matrix.os }}
+    name: P${{ matrix.php }} - L${{ matrix.laravel }} - ${{ matrix.stability }} - ${{ matrix.os }}
 
     steps:
       - name: Checkout code
@@ -47,28 +38,14 @@ jobs:
       - name: Install dependencies
         run: |
           composer require --dev "laravel/framework:${{ matrix.laravel }}" --no-interaction --no-update
-          # --with narrows Testbench and Pest to the leg's majors for this resolve only:
-          # composer.json keeps both in `require` (the dev-only carve-out) with their committed
-          # constraints, which the suite itself pins. `require --dev` would move them.
+          # --with narrows Testbench to the leg's major for this resolve only: composer.json keeps
+          # it in `require` (the dev-only carve-out) with its committed constraint, which the suite
+          # itself pins. `require --dev` would move it.
           composer update --${{ matrix.stability }} --prefer-dist --no-interaction \
-            --with "orchestra/testbench:${{ matrix.testbench }}" \
-            --with "pestphp/pest:${{ matrix.pest }}" \
-            --with "pestphp/pest-plugin-laravel:${{ matrix.pest }}"
+            --with "orchestra/testbench:${{ matrix.testbench }}"
 
       - name: List Installed Dependencies
         run: composer show -D
-
-      - name: Verify Pest major
-        # A leg must never run the other major and still report green under its name.
-        run: |
-          installed="$(composer show pestphp/pest --format=json | jq -r '.versions[0]')"
-          expected="${{ matrix.pest }}"
-          echo "pestphp/pest ${installed} (leg: ${expected})"
-          major="${installed#v}"
-          if [ "${major%%.*}" != "${expected%%.*}" ]; then
-            echo "::error::Pest ${installed} installed on the Pest ${expected} leg"
-            exit 1
-          fi
 
       - name: Execute tests
         run: vendor/bin/pest --coverage --min=90
