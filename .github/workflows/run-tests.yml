@@ -37,7 +37,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          composer require --dev "laravel/framework:${{ matrix.laravel }}" --no-interaction --no-update
+          # Laravel's 13.x releases before 13.32 predate PHP 8.6 (their session handlers miss
+          # create_sid()), so a PHP 8.6 job resolves the framework from 13.32.
+          composer require --dev "laravel/framework:${{ matrix.php == 8.6 && '^13.32' || matrix.laravel }}" --no-interaction --no-update
           # --with narrows Testbench to the leg's major for this resolve only: composer.json keeps
           # it in `require` (the dev-only carve-out) with its committed constraint, which the suite
           # itself pins. `require --dev` would move it.
