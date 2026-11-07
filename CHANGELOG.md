@@ -6,6 +6,11 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 
 ## Unreleased
 
+### Changed
+
+- Documentation: the install command names `phpunit/phpunit:^13.0`, which a fresh Laravel 13 app needs to
+  move from PHPUnit 12 to the PHPUnit 13 that Pest 5 requires.
+
 ## 2.0.0 - 2026-11-07
 
 ### Changed

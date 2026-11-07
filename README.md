@@ -29,11 +29,11 @@ and architecture presets, each built so it can always fail.
 Requires PHP 8.4, Laravel 13 and Pest 5.
 
 ```bash
-composer require --dev roundly-consulting/testing-for-laravel --with-all-dependencies
+composer require --dev roundly-consulting/testing-for-laravel phpunit/phpunit:^13.0 --with-all-dependencies
 ```
 
-`--with-all-dependencies` lets Composer move the `phpunit/phpunit` version a fresh Laravel app
-locks to the PHPUnit 13 that Pest 5 needs.
+A fresh Laravel 13 app requires PHPUnit 12; naming `phpunit/phpunit:^13.0` moves it to the PHPUnit 13
+that Pest 5 needs. A project already on Pest 5 needs only the package.
 
 ## Usage
 
