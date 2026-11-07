@@ -6,6 +6,12 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 
 ## Unreleased
 
+### Changed
+
+- **Breaking:** requires Laravel 13; Laravel 12 is no longer supported. Upgrade the application to Laravel 13 before updating.
+- **Breaking:** requires Pest 5 (PHPUnit 13); Pest 4 is no longer supported. Move the package's `pestphp/pest` and Pest plugins to `^5.0`.
+- Maintenance: tested on PHP 8.4, 8.5 and 8.6; the test suite runs on Pest 5.
+
 ## 1.6.1 - 2026-10-17
 
 ### Fixed

@@ -26,14 +26,14 @@ and architecture presets, each built so it can always fail.
 
 ## Installation
 
-Requires PHP 8.4, Laravel 12 or 13, and Pest 4 (or Pest 5 on Laravel 13).
+Requires PHP 8.4, Laravel 13 and Pest 5.
 
 ```bash
 composer require --dev roundly-consulting/testing-for-laravel --with-all-dependencies
 ```
 
 `--with-all-dependencies` lets Composer move the `phpunit/phpunit` version a fresh Laravel app
-locks to one your Pest major supports (PHPUnit 12 for Pest 4, PHPUnit 13 for Pest 5).
+locks to the PHPUnit 13 that Pest 5 needs.
 
 ## Usage
 
