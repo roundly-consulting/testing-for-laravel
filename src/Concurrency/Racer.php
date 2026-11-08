@@ -26,6 +26,7 @@ use Throwable;
  *         ->run(fn (): string => Coupons::redeem($coupon->code) ? 'redeemed' : 'refused')
  *         ->waitUntilBlockedOrDone();
  *
+ *     Coupons::redeem($coupon->code);
  *     DB::commit();
  *
  *     expect($racer->outcome())->toBe('refused');
