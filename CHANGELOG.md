@@ -6,6 +6,8 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 
 ## Unreleased
 
+## 2.1.0 - 2026-11-08
+
 ### Added
 
 - `Concurrency\Racer`: a second database session in a forked process, for real-engine races. It
@@ -35,6 +37,8 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 
 - Documentation: the install command names `phpunit/phpunit:^13.0`, which a fresh Laravel 13 app needs to
   move from PHPUnit 12 to the PHPUnit 13 that Pest 5 requires.
+- Maintenance: the PHP 8.6 CI job resolves Laravel 13.32 or newer, the first 13.x releases that
+  run on PHP 8.6.
 
 ## 2.0.0 - 2026-11-07
 
