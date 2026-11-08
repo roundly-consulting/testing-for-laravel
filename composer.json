@@ -36,6 +36,10 @@
         "phpstan/extension-installer": "^1.1",
         "phpstan/phpstan-deprecation-rules": "^2.0"
     },
+    "suggest": {
+        "ext-pcntl": "Needed by Concurrency\\Racer to fork a second database session; without it Racer::available() is false",
+        "ext-posix": "Needed by Concurrency\\Racer to end the forked racer with SIGKILL; without it Racer::available() is false"
+    },
     "autoload": {
         "psr-4": {
             "RoundlyConsulting\\Testing\\": "src"

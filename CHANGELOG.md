@@ -8,6 +8,14 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 
 ### Added
 
+- `Concurrency\Racer`: a second database session in a forked process, for real-engine races. It
+  runs one operation on its own connection (`racer`, built from `DriverMatrix::connectionConfig()`),
+  never the parent's, and ends with `posix_kill(SIGKILL)` so no destructor closes the sessions it
+  shares with the parent, the kept schema's included. `waitUntilBlockedOrDone()` returns once the
+  racer waits on a lock in this test's database (Postgres or MySQL) or has finished; one that does
+  neither within the timeout is killed and the call throws. `Racer::available()` is true on a pgsql
+  or mysql leg with pcntl and posix, for a visible `->skip()`. Replaces the `tests/Support/Racer.php`
+  copied into seven packages.
 - `Concerns\UsesPublishSandbox`: points `config/`, `database/` and `app/` at a throwaway directory
   per test, before the providers register, and deletes it afterwards, so a publish, install or
   generator test never writes into the Testbench skeleton the parallel suite boots from.
@@ -20,6 +28,8 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
   any key or value (also JSON-encoded or inside prose), or a `*_type` key holding a class. Every
   leak is listed with its path. `{"id": 1, "type": "User"}` and morph aliases pass; an empty payload
   never does.
+- `ext-pcntl` and `ext-posix` are suggested, not required: without them `Racer::available()` is
+  false and racing tests skip.
 
 ### Changed
 
