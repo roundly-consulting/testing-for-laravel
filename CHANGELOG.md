@@ -8,6 +8,13 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 
 ### Added
 
+- `Concerns\UsesPublishSandbox`: points `config/`, `database/` and `app/` at a throwaway directory
+  per test, before the providers register, and deletes it afterwards, so a publish, install or
+  generator test never writes into the Testbench skeleton the parallel suite boots from.
+  `assertPublishesIntoSandbox(...$tags)` pins it: every sandboxed path helper and every destination
+  the tags map resolve inside the sandbox, and a tag that maps nothing fails. `publishSandboxPaths()`
+  narrows what moves and `preparePublishSandbox()` seeds files the host already has. Replaces the
+  publish and install base cases copied into ten packages.
 - `expect($payload)->toExposeNoClassNames()` (and `Assert::exposesNoClassNames()`): fails when a JSON
   string, an array, a `JsonResource` or a response carries a PHP class name: a namespaced name in
   any key or value (also JSON-encoded or inside prose), or a `*_type` key holding a class. Every

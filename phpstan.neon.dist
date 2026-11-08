@@ -2,6 +2,9 @@ parameters:
     level: 7
     paths:
         - src
+        # The one class using the shipped UsesPublishSandbox trait: analysing it is what gets the
+        # trait's body analysed (an unused trait is never looked inside).
+        - tests/Support/PublishSandboxTestCase.php
     excludePaths:
         # These bind Pest's expect()->extend() closures ($this is the expectation,
         # resolved by Pest at runtime) and Pest's @internal Bootable plugin contract.
