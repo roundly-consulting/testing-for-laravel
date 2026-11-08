@@ -20,6 +20,7 @@ use RoundlyConsulting\Testing\Assertions\Migrations\MigrationGraph;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationPublish;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationRunner;
 use RoundlyConsulting\Testing\Assertions\ModelSwap;
+use RoundlyConsulting\Testing\Assertions\NoClassNames;
 
 /**
  * Static entry points for every assertion in this package.
@@ -218,5 +219,15 @@ final class Assert
     public static function facadeRedactsSensitiveArguments(string $facade, int $methods): void
     {
         FacadeRedaction::assert($facade, $methods);
+    }
+
+    /**
+     * Secondary escape hatch for `expect($payload)->toExposeNoClassNames()`: pin that a JSON
+     * string, an array, a `JsonResource` or a response carries no PHP class name — no
+     * namespaced name anywhere, no `*_type` key holding a class — and fail on an empty payload.
+     */
+    public static function exposesNoClassNames(mixed $payload): void
+    {
+        NoClassNames::assert($payload);
     }
 }

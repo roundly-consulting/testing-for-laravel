@@ -18,6 +18,7 @@ use RoundlyConsulting\Testing\Assertions\Migrations\MigrationGraph;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationPublish;
 use RoundlyConsulting\Testing\Assertions\Migrations\MigrationRunner;
 use RoundlyConsulting\Testing\Assertions\ModelSwap;
+use RoundlyConsulting\Testing\Assertions\NoClassNames;
 use RoundlyConsulting\Testing\Pest\Plugin;
 
 /**
@@ -115,6 +116,12 @@ final class Expectations
 
         expect()->extend('toReachEveryAction', function (string $actionsDir, array $except = [], array $via = []): mixed {
             ActionReach::assert((string) $this->value, $actionsDir, $except, $via);
+
+            return $this;
+        });
+
+        expect()->extend('toExposeNoClassNames', function (): mixed {
+            NoClassNames::assert($this->value);
 
             return $this;
         });

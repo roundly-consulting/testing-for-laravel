@@ -6,6 +6,14 @@ All notable changes to `testing-for-laravel` are documented in this file. The fo
 
 ## Unreleased
 
+### Added
+
+- `expect($payload)->toExposeNoClassNames()` (and `Assert::exposesNoClassNames()`): fails when a JSON
+  string, an array, a `JsonResource` or a response carries a PHP class name: a namespaced name in
+  any key or value (also JSON-encoded or inside prose), or a `*_type` key holding a class. Every
+  leak is listed with its path. `{"id": 1, "type": "User"}` and morph aliases pass; an empty payload
+  never does.
+
 ### Changed
 
 - Documentation: the install command names `phpunit/phpunit:^13.0`, which a fresh Laravel 13 app needs to
